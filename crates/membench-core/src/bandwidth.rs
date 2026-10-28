@@ -441,12 +441,13 @@ fn aggregate(job: &Job, outcomes: &[Outcome]) -> CellResult {
     }
     if buffers == 2 {
         if let Some(cache) = plan.cache_bytes {
+            let cache = cache as usize;
             if footprint > cache {
                 notes.push(format!(
                     "the two buffers together are {}, which is more than the {} being measured: \
                      this cell is part {} traffic, not a pure cache result",
                     crate::sysinfo::human_bytes(footprint as u64),
-                    crate::sysinfo::human_bytes(cache),
+                    crate::sysinfo::human_bytes(cache as u64),
                     plan.level.short(),
                 ));
             }

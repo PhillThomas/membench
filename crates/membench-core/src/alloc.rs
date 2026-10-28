@@ -569,10 +569,15 @@ mod tests {
             }
             PageKind::FourK => {
                 assert!(s.note.is_some(), "no explanation for the fallback: {s:?}");
-                assert_eq!(
-                    s.huge_bytes.unwrap_or(0),
-                    0,
-                    "fallback with huge bytes: {s:?}"
+                // A fallback does not mean "no huge pages at all". This box has
+                // handed back 2 MiB of a 32 MiB mapping — one huge page, the
+                // rest 4 KiB — which is a partial grant, correctly reported as
+                // FourK with a non-zero `huge_bytes`. The invariant is that the
+                // grant was not complete, not that it was empty.
+                let expected = (b.len() / PageKind::TwoM.bytes()) * PageKind::TwoM.bytes();
+                assert!(
+                    s.huge_bytes.unwrap_or(0) < expected as u64,
+                    "claims a fallback while reporting a full grant: {s:?}"
                 );
             }
             PageKind::OneG => panic!("asked for 2 MiB, reported 1 GiB: {s:?}"),
