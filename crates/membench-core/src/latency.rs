@@ -22,7 +22,9 @@ use std::time::{Duration, Instant};
 
 use crate::alloc::{AllocOpts, Buffer};
 use crate::kernels;
-use crate::result::{CellResult, ClockMeasurement, Level, Op, PageKind, Settings, Sweep, SweepPoint, SystemInfo};
+use crate::result::{
+    CellResult, ClockMeasurement, Level, Op, PageKind, Settings, Sweep, SweepPoint, SystemInfo,
+};
 use crate::runner::Event;
 use crate::stats::{Direction, Stats};
 use crate::timer;
@@ -153,7 +155,7 @@ fn chase(job: &LatencyJob) -> Result<Chase> {
     std::hint::black_box(sink);
     let warm_dur = warm.elapsed().max(Duration::from_micros(50));
 
-    let target_ms = job.settings.duration_ms.min(TRIAL_MS).max(5);
+    let target_ms = job.settings.duration_ms.clamp(5, TRIAL_MS);
     let passes = ((target_ms as u128 * 1_000_000) / warm_dur.as_nanos().max(1)).max(1) as u64;
     let loads = (nodes as u64).saturating_mul(passes);
     // The kernel performs `loads & !15` dependent loads.
@@ -337,7 +339,10 @@ pub fn run_sweep(job: &SweepJob) -> Result<Sweep> {
         let c = match chase(&inner) {
             Ok(c) => c,
             Err(e) => {
-                notes.push(format!("{} skipped: {e}", crate::sysinfo::human_bytes(size as u64)));
+                notes.push(format!(
+                    "{} skipped: {e}",
+                    crate::sysinfo::human_bytes(size as u64)
+                ));
                 continue;
             }
         };
@@ -363,8 +368,7 @@ pub fn run_sweep(job: &SweepJob) -> Result<Sweep> {
         return Err(Error::Unsupported("the sweep produced no points"));
     }
     notes.push(
-        "steps in this curve are cache boundaries: L1 → L2 → L3 → page-walk → DRAM"
-            .to_string(),
+        "steps in this curve are cache boundaries: L1 → L2 → L3 → page-walk → DRAM".to_string(),
     );
     Ok(Sweep {
         points,
@@ -402,11 +406,18 @@ mod tests {
                 let mut seen = vec![false; n];
                 let mut at = 0usize;
                 for _ in 0..n {
-                    assert!(!seen[at], "revisited {at} after {} steps (seed {seed}, n {n})", seen.iter().filter(|s| **s).count());
+                    assert!(
+                        !seen[at],
+                        "revisited {at} after {} steps (seed {seed}, n {n})",
+                        seen.iter().filter(|s| **s).count()
+                    );
                     seen[at] = true;
                     at = v[at];
                 }
-                assert!(seen.iter().all(|s| *s), "not all nodes reachable, seed {seed} n {n}");
+                assert!(
+                    seen.iter().all(|s| *s),
+                    "not all nodes reachable, seed {seed} n {n}"
+                );
                 assert_eq!(at, 0, "cycle did not close, seed {seed} n {n}");
             }
         }
@@ -419,10 +430,10 @@ mod tests {
         let (head, nodes) = build_chain(&mut buf, line, 42).unwrap();
         assert_eq!(nodes, 64 * 1024 / line);
         let base = buf.ptr() as usize;
-        assert!((head as usize - base) % line == 0, "head not line aligned");
+        assert!((head - base) % line == 0, "head not line aligned");
 
         let mut seen = vec![false; nodes];
-        let mut at = head as usize;
+        let mut at = head;
         for step in 0..nodes {
             let idx = (at - base) / line;
             assert!(idx < nodes, "chase left the buffer at step {step}");
@@ -452,7 +463,8 @@ mod tests {
         assert!(l.len() > 15, "{l:?}");
         assert!(l.windows(2).all(|w| w[1] > w[0]), "not ascending: {l:?}");
         // Both sides of a 32K L1 and a 16M L3 must be sampled.
-        let covers = |target: usize| l.iter().any(|s| *s <= target) && l.iter().any(|s| *s > target);
+        let covers =
+            |target: usize| l.iter().any(|s| *s <= target) && l.iter().any(|s| *s > target);
         assert!(covers(32 * 1024));
         assert!(covers(16 * 1024 * 1024));
         // Halved ceiling shortens the ladder but never empties it.
@@ -464,6 +476,10 @@ mod tests {
         assert_eq!(sweep_ladder(4096), vec![4096]);
     }
 
+    /// Only meaningful in a debug build: in a release build this job would
+    /// really chase pointers, which is a benchmark, not a unit test. The
+    /// release side of the same rule is checked cheaply in `runner`.
+    #[cfg(debug_assertions)]
     #[test]
     fn latency_refuses_debug_builds() {
         let sys = Box::leak(Box::new(crate::sysinfo::gather()));

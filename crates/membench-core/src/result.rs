@@ -215,13 +215,7 @@ impl Isa {
         }
     }
 
-    pub const ALL: [Isa; 5] = [
-        Isa::Avx512,
-        Isa::Avx2,
-        Isa::Sse2,
-        Isa::Neon,
-        Isa::Scalar,
-    ];
+    pub const ALL: [Isa; 5] = [Isa::Avx512, Isa::Avx2, Isa::Sse2, Isa::Neon, Isa::Scalar];
 }
 
 impl fmt::Display for Isa {
@@ -297,7 +291,13 @@ impl FromStr for PageKind {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().replace("page", "").trim().to_string().as_str() {
+        match s
+            .to_ascii_lowercase()
+            .replace("page", "")
+            .trim()
+            .to_string()
+            .as_str()
+        {
             "4k" | "4" => Ok(PageKind::FourK),
             "2m" | "2" => Ok(PageKind::TwoM),
             "1g" | "1" => Ok(PageKind::OneG),
@@ -335,7 +335,9 @@ impl FromStr for WriteHeadline {
         match s.to_ascii_lowercase().as_str() {
             "nt" | "non-temporal" | "nontemporal" => Ok(WriteHeadline::Nt),
             "normal" | "regular" => Ok(WriteHeadline::Normal),
-            other => Err(format!("unknown write headline {other:?} (use nt or normal)")),
+            other => Err(format!(
+                "unknown write headline {other:?} (use nt or normal)"
+            )),
         }
     }
 }
@@ -440,10 +442,7 @@ impl Settings {
             }
             Column::Latency => &[Op::Latency],
         };
-        candidates
-            .iter()
-            .copied()
-            .find(|op| self.ops.contains(op))
+        candidates.iter().copied().find(|op| self.ops.contains(op))
     }
 }
 
@@ -901,7 +900,7 @@ impl RunResults {
             .filter(|l| self.cells.iter().any(|c| c.level == *l))
             .collect();
         if present.is_empty() {
-            self.settings.levels.iter().copied().collect()
+            self.settings.levels.to_vec()
         } else {
             present
         }

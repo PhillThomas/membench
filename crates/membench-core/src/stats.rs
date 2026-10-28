@@ -89,7 +89,11 @@ impl Stats {
         let n = retained.len() as f64;
         let mean = retained.iter().sum::<f64>() / n;
         let variance = if retained.len() > 1 {
-            retained.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (n - 1.0)
+            retained
+                .iter()
+                .map(|x| (x - mean) * (x - mean))
+                .sum::<f64>()
+                / (n - 1.0)
         } else {
             0.0
         };

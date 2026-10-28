@@ -46,13 +46,15 @@ pub fn warnings(cores: &[CoreInfo], _topology: &Topology) -> Vec<Warning> {
     if !risky.is_empty() {
         let list = risky
             .iter()
-            .map(|(g, cpus)| format!("{g} [{}]", crate::sysinfo::format_cpu_list(&cpus)))
+            .map(|(g, cpus)| format!("{g} [{}]", crate::sysinfo::format_cpu_list(cpus)))
             .collect::<Vec<_>>()
             .join(", ");
         let mut w = Warning::new(
             "governor",
-            format!("CPU frequency scaling is active ({list}); a frequency change mid-run moves \
-                     the numbers more than any code change would"),
+            format!(
+                "CPU frequency scaling is active ({list}); a frequency change mid-run moves \
+                     the numbers more than any code change would"
+            ),
         );
         if risky.iter().any(|(g, _)| *g == "powersave") {
             w = w.with_hint(
@@ -90,7 +92,7 @@ pub fn warnings(cores: &[CoreInfo], _topology: &Topology) -> Vec<Warning> {
     if !power_epp.is_empty() {
         let list = power_epp
             .iter()
-            .map(|(v, cpus)| format!("{v} [{}]", crate::sysinfo::format_cpu_list(&cpus)))
+            .map(|(v, cpus)| format!("{v} [{}]", crate::sysinfo::format_cpu_list(cpus)))
             .collect::<Vec<_>>()
             .join(", ");
         out.push(
@@ -152,7 +154,10 @@ mod tests {
 
     #[test]
     fn powersave_governor_warns() {
-        let cores = vec![core(0, Some("powersave"), None), core(1, Some("powersave"), None)];
+        let cores = vec![
+            core(0, Some("powersave"), None),
+            core(1, Some("powersave"), None),
+        ];
         let w = warnings(&cores, &topo());
         assert!(w.iter().any(|w| w.code == "governor"), "{w:?}");
         // The hint must not overclaim: powersave is named, and the nuance too.

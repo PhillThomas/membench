@@ -21,7 +21,7 @@ pub fn now_unix() -> (i64, u32) {
             .unwrap_or_default();
         return (d.as_secs() as i64, d.subsec_nanos());
     }
-    (tv.tv_sec as i64, (tv.tv_usec as i64 * 1000) as u32)
+    (tv.tv_sec, (tv.tv_usec * 1000) as u32)
 }
 
 /// Days since 1970-01-01 to (year, month, day). Howard Hinnant's
@@ -29,7 +29,7 @@ pub fn now_unix() -> (i64, u32) {
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as i64; // [0, 146096]
+    let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]

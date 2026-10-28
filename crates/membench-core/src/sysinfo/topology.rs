@@ -46,7 +46,8 @@ pub fn detect(caches: &CacheInfo) -> (Vec<CoreInfo>, Topology) {
     let mut cores: Vec<CoreInfo> = Vec::new();
     // Socket ids are only needed for grouping and the multi-socket warning, so
     // they stay in this local map instead of widening the JSON schema.
-    let mut packages: std::collections::HashMap<usize, Option<u32>> = std::collections::HashMap::new();
+    let mut packages: std::collections::HashMap<usize, Option<u32>> =
+        std::collections::HashMap::new();
 
     for cpu in present_cpus() {
         let dir = cpu_dir(cpu);
@@ -59,10 +60,7 @@ pub fn detect(caches: &CacheInfo) -> (Vec<CoreInfo>, Topology) {
             .unwrap_or_else(|| vec![cpu]);
         let core_id = read_u64(&format!("{dir}/topology/core_id")).map(|v| v as u32);
         let package_id = read_u64(&format!("{dir}/topology/physical_package_id")).map(|v| v as u32);
-        let thread_idx = siblings
-            .iter()
-            .position(|c| *c == cpu)
-            .unwrap_or(0) as u32;
+        let thread_idx = siblings.iter().position(|c| *c == cpu).unwrap_or(0) as u32;
 
         let hybrid_role = if perf_cpus.as_ref().is_some_and(|v| v.contains(&cpu)) {
             Some("performance".to_string())
@@ -99,7 +97,10 @@ pub fn detect(caches: &CacheInfo) -> (Vec<CoreInfo>, Topology) {
     // core rather than merging them all together.
     let mut groups: Vec<((u32, u32), Vec<usize>)> = Vec::new();
     for c in &cores {
-        let key = (packages.get(&c.cpu).copied().flatten().unwrap_or(0), c.core_id.unwrap_or(c.cpu as u32));
+        let key = (
+            packages.get(&c.cpu).copied().flatten().unwrap_or(0),
+            c.core_id.unwrap_or(c.cpu as u32),
+        );
         match groups.iter_mut().find(|(k, _)| *k == key) {
             Some((_, members)) => members.push(c.cpu),
             None => groups.push((key, vec![c.cpu])),
@@ -273,7 +274,12 @@ mod tests {
     fn every_core_lists_itself_as_a_sibling() {
         let s = sys();
         for c in &s.cores {
-            assert!(c.siblings.contains(&c.cpu), "cpu {} {:?}", c.cpu, c.siblings);
+            assert!(
+                c.siblings.contains(&c.cpu),
+                "cpu {} {:?}",
+                c.cpu,
+                c.siblings
+            );
             assert!((c.thread_idx.unwrap_or(0) as usize) < c.siblings.len());
         }
     }

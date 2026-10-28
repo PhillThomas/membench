@@ -8,9 +8,7 @@
 
 use std::fmt::Write as _;
 
-use membench_core::result::{
-    CellResult, Column, RunResults, Settings, Sweep, SystemInfo, Warning,
-};
+use membench_core::result::{CellResult, Column, RunResults, Settings, Sweep, SystemInfo, Warning};
 use membench_core::sysinfo::human_bytes;
 
 /// One grid figure, formatted with its unit.
@@ -70,7 +68,12 @@ pub fn grid(results: &RunResults) -> String {
 
     let mut header = format!("{:>width$}", "", width = row_label_width + 2);
     for (i, column) in columns.iter().enumerate() {
-        let _ = write!(header, "  {:>width$}", column.to_string(), width = widths[i]);
+        let _ = write!(
+            header,
+            "  {:>width$}",
+            column.to_string(),
+            width = widths[i]
+        );
     }
     out.push_str(&header);
     out.push('\n');
@@ -130,7 +133,13 @@ pub fn details(results: &RunResults) -> String {
     let mut notes = String::new();
     for cell in &results.cells {
         for note in &cell.notes {
-            let _ = writeln!(notes, "  {} {}: {}", cell.level.short(), cell.op.label(), note);
+            let _ = writeln!(
+                notes,
+                "  {} {}: {}",
+                cell.level.short(),
+                cell.op.label(),
+                note
+            );
         }
     }
     if !notes.is_empty() {
@@ -193,7 +202,9 @@ pub fn conventions(results: &RunResults) -> String {
     } else {
         "  copy: source bytes only (AIDA convention; --copy-counts-both counts both)\n"
     });
-    out.push_str("  headline figure: best trial; spread is (max-min)/median of the retained trials\n");
+    out.push_str(
+        "  headline figure: best trial; spread is (max-min)/median of the retained trials\n",
+    );
     out.push_str(&format!(
         "  memory write headline: {} stores (--write-hint {} to see the other)\n",
         match s.write_headline {
@@ -291,32 +302,27 @@ pub fn system_panel(sys: &SystemInfo) -> String {
     if !sys.cpu.features.is_empty() {
         let _ = writeln!(out, "  {:<11}{}", "Features", sys.cpu.features.join(" "));
     }
-    let _ = writeln!(
-        out,
-        "  {:<11}{}",
-        "ISA paths",
-        {
-            let paths = sys
-                .cpu
-                .isa_paths
-                .iter()
-                .map(|i| i.label())
-                .collect::<Vec<_>>()
-                .join(" > ");
-            if paths.is_empty() {
-                "Unknown".to_string()
-            } else {
-                paths
-            }
+    let _ = writeln!(out, "  {:<11}{}", "ISA paths", {
+        let paths = sys
+            .cpu
+            .isa_paths
+            .iter()
+            .map(|i| i.label())
+            .collect::<Vec<_>>()
+            .join(" > ");
+        if paths.is_empty() {
+            "Unknown".to_string()
+        } else {
+            paths
         }
-    );
+    });
 
     let mut caches = Vec::new();
     for level in 1..=3u8 {
         if let Some(c) = sys.caches.data_level(level) {
             let size = c
                 .size_bytes
-                .map(|b| human_bytes(b))
+                .map(human_bytes)
                 .unwrap_or_else(|| "Unknown".to_string());
             // An L3 shared by several domains is reported per domain, because
             // that is what a buffer of that size actually sees.
@@ -351,9 +357,7 @@ pub fn system_panel(sys: &SystemInfo) -> String {
     if let Some(kind) = &mem.mem_type {
         memline.push_str(&format!(
             "  {kind}{}",
-            mem.speed_mts
-                .map(|s| format!("-{s}"))
-                .unwrap_or_default()
+            mem.speed_mts.map(|s| format!("-{s}")).unwrap_or_default()
         ));
         if let Some(src) = &mem.mem_type_source {
             memline.push_str(&format!(" ({src})"));
@@ -392,7 +396,11 @@ pub fn system_panel(sys: &SystemInfo) -> String {
             out,
             "  {:<11}{}  (rated, from SPD on {})",
             "",
-            if bits.is_empty() { t.note.clone() } else { bits.join("  ") },
+            if bits.is_empty() {
+                t.note.clone()
+            } else {
+                bits.join("  ")
+            },
             t.device
         );
     }
@@ -403,7 +411,9 @@ pub fn system_panel(sys: &SystemInfo) -> String {
         out,
         "  {:<11}{} transparent hugepages, {} node(s)",
         "Kernel",
-        mem.transparent_hugepages.clone().unwrap_or_else(|| "Unknown".to_string()),
+        mem.transparent_hugepages
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string()),
         mem.numa_node_count
     );
     let _ = writeln!(
@@ -462,7 +472,18 @@ pub fn plan_summary(settings: &Settings, sys: &SystemInfo) -> String {
     let ops: Vec<String> = settings
         .levels
         .iter()
-        .map(|l| format!("{}: {}", l.short(), settings.ops_for(*l).iter().map(|o| o.label()).collect::<Vec<_>>().join("+")))
+        .map(|l| {
+            format!(
+                "{}: {}",
+                l.short(),
+                settings
+                    .ops_for(*l)
+                    .iter()
+                    .map(|o| o.label())
+                    .collect::<Vec<_>>()
+                    .join("+")
+            )
+        })
         .collect();
     let _ = writeln!(out, "  cells: {}", ops.join(", "));
     let _ = writeln!(
@@ -508,7 +529,9 @@ pub fn sweep_row(p: &membench_core::result::SweepPoint) -> String {
 
 /// Sweep as CSV, for `membench sweep` and for plotting elsewhere.
 pub fn sweep_csv(sweep: &Sweep) -> String {
-    let mut out = String::from("size_bytes,nodes,ns,cycles,trials,best_ns,spread_pct,pages_actual,huge_pages_bytes\n");
+    let mut out = String::from(
+        "size_bytes,nodes,ns,cycles,trials,best_ns,spread_pct,pages_actual,huge_pages_bytes\n",
+    );
     for p in &sweep.points {
         let _ = writeln!(
             out,
@@ -516,14 +539,14 @@ pub fn sweep_csv(sweep: &Sweep) -> String {
             p.size_bytes,
             p.nodes,
             p.ns,
-            p.cycles
-                .map(|c| format!("{c:.2}"))
-                .unwrap_or_default(),
+            p.cycles.map(|c| format!("{c:.2}")).unwrap_or_default(),
             p.trials,
             p.best_ns,
             p.spread_pct,
             p.pages_actual,
-            p.huge_pages_bytes.map(|h| h.to_string()).unwrap_or_default(),
+            p.huge_pages_bytes
+                .map(|h| h.to_string())
+                .unwrap_or_default(),
         );
     }
     out
@@ -538,14 +561,8 @@ pub fn compare_table(rows: &[crate::store::Diff]) -> String {
         "Cell", "A", "B", "Change"
     );
     for d in rows {
-        let a = d
-            .a
-            .map(|v| fmt_value(v, &d.unit))
-            .unwrap_or_else(dash);
-        let b = d
-            .b
-            .map(|v| fmt_value(v, &d.unit))
-            .unwrap_or_else(dash);
+        let a = d.a.map(|v| fmt_value(v, &d.unit)).unwrap_or_else(dash);
+        let b = d.b.map(|v| fmt_value(v, &d.unit)).unwrap_or_else(dash);
         let change = d
             .change_pct()
             .map(|p| format!("{p:+.1}%"))
@@ -561,8 +578,6 @@ pub fn compare_table(rows: &[crate::store::Diff]) -> String {
     }
     out
 }
-
-/// Every operation the runner can produce, for `--help` text.
 
 #[cfg(test)]
 mod tests {

@@ -35,7 +35,8 @@ pub fn save(results: &RunResults, path: Option<&Path>) -> Result<PathBuf> {
         .context("could not serialise the result document")?;
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("could not create {}", parent.display()))?;
         }
     }
     fs::write(&path, text).with_context(|| format!("could not write {}", path.display()))?;
@@ -43,8 +44,8 @@ pub fn save(results: &RunResults, path: Option<&Path>) -> Result<PathBuf> {
 }
 
 pub fn load(path: &Path) -> Result<RunResults> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("could not read {}", path.display()))?;
+    let text =
+        fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
     let doc: RunResults = serde_json::from_str(&text)
         .with_context(|| format!("{} is not a membench result document", path.display()))?;
     if doc.schema_version != membench_core::SCHEMA_VERSION {
@@ -122,8 +123,10 @@ pub fn configuration_diff(a: &RunResults, b: &RunResults) -> Vec<String> {
     if sa.threads != sb.threads {
         out.push(format!(
             "threads: {} vs {}",
-            sa.threads.map_or_else(|| "auto".to_string(), |n| n.to_string()),
-            sb.threads.map_or_else(|| "auto".to_string(), |n| n.to_string())
+            sa.threads
+                .map_or_else(|| "auto".to_string(), |n| n.to_string()),
+            sb.threads
+                .map_or_else(|| "auto".to_string(), |n| n.to_string())
         ));
     }
     if sa.isa != sb.isa {
@@ -217,7 +220,11 @@ mod tests {
         let b = doc(&[(Level::Memory, Column::Read, 55.0)]);
         let d = diff(&a, &b);
         assert_eq!(d.len(), 1);
-        assert!((d[0].change_pct().unwrap() - 10.0).abs() < 0.001, "{:?}", d[0]);
+        assert!(
+            (d[0].change_pct().unwrap() - 10.0).abs() < 0.001,
+            "{:?}",
+            d[0]
+        );
     }
 
     #[test]
@@ -234,9 +241,11 @@ mod tests {
     #[test]
     fn mismatched_settings_are_reported() {
         let a = doc(&[]);
-        let mut s = Settings::default();
-        s.threads = Some(4);
-        s.pages = PageKind::FourK;
+        let s = Settings {
+            threads: Some(4),
+            pages: PageKind::FourK,
+            ..Default::default()
+        };
         let b = RunResults::new(a.system.clone(), s);
         let d = configuration_diff(&a, &b);
         assert!(d.iter().any(|x| x.contains("threads")), "{d:?}");

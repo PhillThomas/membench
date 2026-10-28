@@ -107,7 +107,12 @@ pub fn for_level(sys: &SystemInfo, settings: &Settings, level: Level) -> Result<
     })
 }
 
-fn l1(sys: &SystemInfo, requested: usize) -> Result<(usize, Vec<usize>, Option<u64>, usize, String)> {
+/// What one level planner decides: bytes per thread, the CPUs to run on, the
+/// cache size it was sized against (`None` for the memory row), the thread
+/// count, and the note that tells the user how the size was arrived at.
+type Planned = (usize, Vec<usize>, Option<u64>, usize, String);
+
+fn l1(sys: &SystemInfo, requested: usize) -> Result<Planned> {
     let l1d = data_cache(sys, 1).ok_or(Error::MissingCache(Level::L1))?;
     let cores = core_cpus(sys);
     if cores.is_empty() {
@@ -131,7 +136,7 @@ fn l1(sys: &SystemInfo, requested: usize) -> Result<(usize, Vec<usize>, Option<u
     Ok((threads, cpus, Some(l1d), bytes, derivation))
 }
 
-fn l2(sys: &SystemInfo, requested: usize) -> Result<(usize, Vec<usize>, Option<u64>, usize, String)> {
+fn l2(sys: &SystemInfo, requested: usize) -> Result<Planned> {
     let l2 = data_cache(sys, 2).ok_or(Error::MissingCache(Level::L2))?;
     let cores = core_cpus(sys);
     if cores.is_empty() {
@@ -153,7 +158,7 @@ fn l2(sys: &SystemInfo, requested: usize) -> Result<(usize, Vec<usize>, Option<u
 
 /// L3 needs a range, not a fraction: big enough to spill out of every L2 on the
 /// way through, small enough to stay inside the share of L3 this thread gets.
-fn l3(sys: &SystemInfo, requested: usize) -> Result<(usize, Vec<usize>, Option<u64>, usize, String)> {
+fn l3(sys: &SystemInfo, requested: usize) -> Result<Planned> {
     let l3_bytes = data_cache(sys, 3).ok_or(Error::MissingCache(Level::L3))?;
     let l2_bytes = data_cache(sys, 2).unwrap_or(l3_bytes / 8);
     let domains = &sys.caches.l3_domains;
@@ -218,22 +223,24 @@ fn l3(sys: &SystemInfo, requested: usize) -> Result<(usize, Vec<usize>, Option<u
         crate::sysinfo::human_bytes(lower as u64)
     );
     if let Some(why) = note_reason {
-        return Ok((threads.max(1), cpus, Some(l3_bytes), bytes, format!("{derivation}; {why}")));
+        return Ok((
+            threads.max(1),
+            cpus,
+            Some(l3_bytes),
+            bytes,
+            format!("{derivation}; {why}"),
+        ));
     }
     Ok((threads.max(1), cpus, Some(l3_bytes), bytes, derivation))
 }
 
-fn memory(
-    sys: &SystemInfo,
-    settings: &Settings,
-    requested: usize,
-) -> Result<(usize, Vec<usize>, Option<u64>, usize, String)> {
+fn memory(sys: &SystemInfo, settings: &Settings, requested: usize) -> Result<Planned> {
     let total_l3 = sys
         .caches
         .data_level(3)
         .and_then(|c| c.total_bytes)
         .unwrap_or(0);
-    let mut target = (MIN_MEMORY_TOTAL_BYTES as u64).max(16 * (total_l3 as u64 + 1));
+    let mut target = (MIN_MEMORY_TOTAL_BYTES as u64).max(16 * (total_l3 + 1));
 
     // Never ask for more than half of what the machine has free; a run that
     // starts swapping measures the swap device.
@@ -275,9 +282,12 @@ fn memory(
 /// The data cache for a level: L1d specifically, then unified, then anything.
 fn data_cache(sys: &SystemInfo, level: u8) -> Option<u64> {
     let c: &CacheInfo = &sys.caches;
-    c.data_level(level)
-        .and_then(|c| c.size_bytes)
-        .or_else(|| c.levels.iter().find(|c| c.level == level).and_then(|c| c.size_bytes))
+    c.data_level(level).and_then(|c| c.size_bytes).or_else(|| {
+        c.levels
+            .iter()
+            .find(|c| c.level == level)
+            .and_then(|c| c.size_bytes)
+    })
 }
 
 /// Physical-core representatives, fastest first, so thread 0 lands on a P-core.
@@ -395,7 +405,13 @@ mod tests {
     /// A synthetic 8-core / 16-thread machine with Intel-style hybrid-free
     /// caches, so the sizing table is a fixed assertion instead of whatever the
     /// build host happens to be.
-    pub fn fixture(l1d: u64, l2: u64, l3: u64, cores: usize, threads_per_core: usize) -> SystemInfo {
+    pub fn fixture(
+        l1d: u64,
+        l2: u64,
+        l3: u64,
+        cores: usize,
+        threads_per_core: usize,
+    ) -> SystemInfo {
         let logical = cores * threads_per_core;
         let cores_list: Vec<usize> = (0..cores).collect();
         let all: Vec<usize> = (0..logical).collect();
@@ -501,7 +517,10 @@ mod tests {
 
         // Only an unpinned request spreads over every logical CPU; an explicit
         // --threads n is obeyed literally at every level.
-        let unpinned = Settings { threads: None, ..s.clone() };
+        let unpinned = Settings {
+            threads: None,
+            ..s.clone()
+        };
         let mem = for_level(&sys, &unpinned, Level::Memory).unwrap();
         assert_eq!(mem.threads, 16, "memory uses every logical CPU");
         // 16 × 16M = 256M < 1 GiB, so the 1 GiB floor governs: 1 GiB / 16.
@@ -583,7 +602,10 @@ mod tests {
 
     #[test]
     fn clamp_never_goes_below_the_floor() {
-        assert_eq!(clamp_bytes(0, MIN_BANDWIDTH_BYTES, 4096), MIN_BANDWIDTH_BYTES);
+        assert_eq!(
+            clamp_bytes(0, MIN_BANDWIDTH_BYTES, 4096),
+            MIN_BANDWIDTH_BYTES
+        );
         assert_eq!(clamp_bytes(9000, MIN_BANDWIDTH_BYTES, 4096), 8192);
         // Rounding down to a 2 MiB page can reach zero; the floor wins, because
         // a cell measured on nothing at all is worse than one on a small buffer.

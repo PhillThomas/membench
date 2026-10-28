@@ -63,7 +63,9 @@ pub fn measure_core_clock(target: Duration) -> Result<ClockMeasurement> {
     let cal = cal_start.elapsed();
     std::hint::black_box(sunk);
     if cal.is_zero() {
-        return Err(crate::Error::Unsupported("clock measurement timer resolution"));
+        return Err(crate::Error::Unsupported(
+            "clock measurement timer resolution",
+        ));
     }
     let ns_per_add = cal.as_nanos() as f64 / CALIBRATION_CHAIN as f64;
 
@@ -76,7 +78,9 @@ pub fn measure_core_clock(target: Duration) -> Result<ClockMeasurement> {
     let elapsed = start.elapsed();
     std::hint::black_box(sunk);
     if elapsed.is_zero() {
-        return Err(crate::Error::Unsupported("clock measurement timer resolution"));
+        return Err(crate::Error::Unsupported(
+            "clock measurement timer resolution",
+        ));
     }
 
     let hz = iterations as f64 / elapsed.as_secs_f64();

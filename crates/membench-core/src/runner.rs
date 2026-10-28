@@ -17,8 +17,8 @@ use crate::bandwidth::{self, Job as BandwidthJob, Work};
 use crate::kernels::Kernels;
 use crate::latency::{self, LatencyJob, SweepJob};
 use crate::result::{
-    CellResult, ClockMeasurement, Column, Level, Op, PageKind, RunResults, Settings,
-    SweepPoint, SystemInfo, Warning,
+    CellResult, ClockMeasurement, Column, Level, Op, PageKind, RunResults, Settings, SweepPoint,
+    SystemInfo, Warning,
 };
 use crate::sizes::{self, CellPlan};
 use crate::sysinfo;
@@ -45,7 +45,9 @@ pub enum Event {
         size_bytes: usize,
     },
     SweepPoint(SweepPoint),
-    Finished(RunResults),
+    /// Boxed: `RunResults` carries the whole system description, so leaving it
+    /// inline would make every event in the channel that large.
+    Finished(Box<RunResults>),
     Failed(String),
 }
 
@@ -103,6 +105,14 @@ impl Runner {
                      reserve huge pages with vm.nr_hugepages",
                 ),
             );
+        }
+        // The machine-level findings gathered at startup — governor, energy
+        // bias, NUMA — belong here as well as in a finished run's document, so
+        // `--dry-run` can warn before anything is measured.
+        for warning in &self.sys.warnings {
+            if !out.iter().any(|w| w.code == warning.code) {
+                out.push(warning.clone());
+            }
         }
         if self.settings.threads.unwrap_or(0) > self.sys.topology.logical_cpus {
             out.push(Warning::new(
@@ -266,9 +276,10 @@ impl Runner {
                     results.sweep = Some(sweep);
                 }
                 Err(e) if matches!(e, Error::Unsupported(_)) => return Err(e),
-                Err(e) => results
-                    .warnings
-                    .push(Warning::new("sweep", format!("the latency sweep failed: {e}"))),
+                Err(e) => results.warnings.push(Warning::new(
+                    "sweep",
+                    format!("the latency sweep failed: {e}"),
+                )),
             }
         }
 
@@ -276,7 +287,7 @@ impl Runner {
             return Err(Error::Unsupported("no cells could be measured"));
         }
         if let Some(tx) = &events {
-            let _ = tx.send(Event::Finished(results.clone()));
+            let _ = tx.send(Event::Finished(Box::new(results.clone())));
         }
         Ok(results)
     }
@@ -292,7 +303,7 @@ fn is_headline(settings: &Settings, level: Level, op: Op) -> bool {
 fn plan_for(work: Work, plan: &CellPlan) -> CellPlan {
     let mut p = plan.clone();
     p.buffers_per_thread = if work.needs_two_buffers() { 2 } else { 1 };
-    p.total_bytes = p.bytes_per_thread * p.threads * p.buffers_per_thread as usize;
+    p.total_bytes = p.bytes_per_thread * p.threads * p.buffers_per_thread;
     p
 }
 
@@ -331,15 +342,21 @@ mod tests {
         let r = Runner::prepare(Settings::default()).unwrap();
         assert!(Kernels::resolve(Some(r.kernels.isa)).is_ok());
         assert!(
-            r.sys.topology.core_cpus.contains(&r.latency_cpu) || r.sys.topology.core_cpus.is_empty()
+            r.sys.topology.core_cpus.contains(&r.latency_cpu)
+                || r.sys.topology.core_cpus.is_empty()
         );
-        assert!(!r.preflight_warnings().iter().any(|w| w.code == "cell-failed"));
+        assert!(!r
+            .preflight_warnings()
+            .iter()
+            .any(|w| w.code == "cell-failed"));
     }
 
     #[test]
     fn forced_scalar_is_reported() {
-        let mut s = Settings::default();
-        s.isa = Some(crate::result::Isa::Scalar);
+        let s = Settings {
+            isa: Some(crate::result::Isa::Scalar),
+            ..Default::default()
+        };
         let r = Runner::prepare(s).unwrap();
         let w = r.preflight_warnings();
         // Scalar is either the default (no "isa-forced" noise) or explicitly
@@ -358,8 +375,10 @@ mod tests {
         assert!(!is_headline(&s, Level::Memory, Op::Write));
         assert!(is_headline(&s, Level::Memory, Op::CopyNt));
         // ...and --write-hint normal flips it.
-        let mut s2 = Settings::default();
-        s2.write_headline = crate::result::WriteHeadline::Normal;
+        let s2 = Settings {
+            write_headline: crate::result::WriteHeadline::Normal,
+            ..Default::default()
+        };
         assert!(is_headline(&s2, Level::Memory, Op::Write));
         assert!(!is_headline(&s2, Level::Memory, Op::WriteNt));
         // Latency is its own column with its own single measurement, so it
@@ -431,21 +450,31 @@ mod tests {
             clock_mhz: None,
             peak_share_pct: None,
         });
-        assert_eq!(grid_value(&r, Level::L1, Column::Read).as_deref(), Some("412.3"));
+        assert_eq!(
+            grid_value(&r, Level::L1, Column::Read).as_deref(),
+            Some("412.3")
+        );
     }
 
+    /// Rule 2, debug half: an unoptimised build must not produce numbers.
+    /// Gated, because the release half would run the whole benchmark here.
+    #[cfg(debug_assertions)]
     #[test]
     fn run_refuses_debug_builds() {
         let cancel = Arc::new(AtomicBool::new(false));
-        let r = run_once(Settings::default(), &cancel);
-        match r {
+        match run_once(Settings::default(), &cancel) {
             Err(Error::DebugBuild { .. }) => {}
-            Err(e) => {
-                // Detection-only failures (no cache info in a container) are also
-                // acceptable, but never a silent success.
-                let _ = e;
-            }
+            // Detection-only failures (no cache info in a container) are also
+            // acceptable, but never a silent success.
+            Err(_) => {}
             Ok(_) => panic!("a debug build must not produce numbers"),
         }
+    }
+
+    /// Rule 2, release half: the guard must not refuse an optimised build.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_build_is_allowed_to_time() {
+        assert!(crate::ensure_release_build("a benchmark run").is_ok());
     }
 }

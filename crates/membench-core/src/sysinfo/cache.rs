@@ -14,8 +14,13 @@ use crate::sysinfo::{dir_entries, parse_cpu_list, parse_size_kb, read_to_string}
 
 /// One `indexN` directory.
 fn read_index_dir(path: &str) -> Option<CacheLevel> {
-    let level = read_to_string(&format!("{path}/level"))?.parse::<u8>().ok()?;
-    let kind = match read_to_string(&format!("{path}/type"))?.to_ascii_lowercase().as_str() {
+    let level = read_to_string(&format!("{path}/level"))?
+        .parse::<u8>()
+        .ok()?;
+    let kind = match read_to_string(&format!("{path}/type"))?
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "data" => CacheKind::Data,
         "instruction" => CacheKind::Instruction,
         "unified" => CacheKind::Unified,
@@ -29,10 +34,8 @@ fn read_index_dir(path: &str) -> Option<CacheLevel> {
             .and_then(|s| s.parse().ok()),
         physical_line_bytes: read_to_string(&format!("{path}/physical_line_size"))
             .and_then(|s| s.parse().ok()),
-        ways: read_to_string(&format!("{path}/ways_of_associativity"))
-            .and_then(|s| s.parse().ok()),
-        sets: read_to_string(&format!("{path}/number_of_sets"))
-            .and_then(|s| s.parse().ok()),
+        ways: read_to_string(&format!("{path}/ways_of_associativity")).and_then(|s| s.parse().ok()),
+        sets: read_to_string(&format!("{path}/number_of_sets")).and_then(|s| s.parse().ok()),
         shared_cpus: read_to_string(&format!("{path}/shared_cpu_list"))
             .map(|s| parse_cpu_list(&s))
             .unwrap_or_default(),
@@ -91,11 +94,12 @@ pub fn detect() -> CacheInfo {
         let mut merged = first.clone();
         merged.level = *level;
 
-        let sizes: Vec<u64> = entries
+        let sizes: Vec<u64> = entries.iter().filter_map(|(_, e)| e.size_bytes).collect();
+        merged.sizes_vary_between_cores = sizes
             .iter()
-            .filter_map(|(_, e)| e.size_bytes)
-            .collect();
-        merged.sizes_vary_between_cores = sizes.iter().collect::<std::collections::BTreeSet<_>>().len() > 1;
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            > 1;
         // The sizing code must use the *smallest* instance of a level, or a
         // buffer that fits an E-core's L2 would not fit a bigger one (hybrid).
         merged.size_bytes = if sizes.is_empty() {
@@ -119,10 +123,7 @@ pub fn detect() -> CacheInfo {
             .size_bytes
             .map(|sz| sz.saturating_mul(domains.len() as u64));
         // Prefer the widest reported line info from any instance.
-        merged.line_bytes = entries
-            .iter()
-            .filter_map(|(_, e)| e.line_bytes)
-            .max();
+        merged.line_bytes = entries.iter().filter_map(|(_, e)| e.line_bytes).max();
         merged.physical_line_bytes = entries
             .iter()
             .filter_map(|(_, e)| e.physical_line_bytes)
@@ -136,7 +137,12 @@ pub fn detect() -> CacheInfo {
         .iter()
         .find(|c| c.level == 1 && c.kind == CacheKind::Data)
         .and_then(|c| c.line_bytes)
-        .or_else(|| levels.iter().find(|c| c.level == 2).and_then(|c| c.line_bytes))
+        .or_else(|| {
+            levels
+                .iter()
+                .find(|c| c.level == 2)
+                .and_then(|c| c.line_bytes)
+        })
         .or_else(|| levels.iter().find_map(|c| c.line_bytes));
 
     // L3 domains: one entry per distinct sharing set.
@@ -155,11 +161,14 @@ pub fn detect() -> CacheInfo {
                     }
                 }
             }
-            per_domain.into_iter().enumerate().map(move |(id, cpus)| L3Domain {
-                id,
-                cpus,
-                size_bytes: c.size_bytes,
-            })
+            per_domain
+                .into_iter()
+                .enumerate()
+                .map(move |(id, cpus)| L3Domain {
+                    id,
+                    cpus,
+                    size_bytes: c.size_bytes,
+                })
         })
         .collect();
 
@@ -227,13 +236,17 @@ mod tests {
         assert!(info.levels.iter().any(|l| l.level == 1));
         // Instance counts must be consistent with the aggregate.
         for l in &info.levels {
-            if let (Some(sz), Some(inst), Some(total)) = (l.size_bytes, l.instances, l.total_bytes) {
+            if let (Some(sz), Some(inst), Some(total)) = (l.size_bytes, l.instances, l.total_bytes)
+            {
                 assert_eq!(total, sz * inst as u64);
             }
         }
         // Line size, when present, is a sane power of two.
         if let Some(line) = info.line_bytes {
-            assert!(line.is_power_of_two() && (32..=256).contains(&line), "{line}");
+            assert!(
+                line.is_power_of_two() && (32..=256).contains(&line),
+                "{line}"
+            );
         }
     }
 
@@ -251,7 +264,12 @@ mod tests {
         let count = all.len();
         all.sort_unstable();
         all.dedup();
-        assert_eq!(all.len(), count, "L3 domains overlap: {:?}", info.l3_domains);
+        assert_eq!(
+            all.len(),
+            count,
+            "L3 domains overlap: {:?}",
+            info.l3_domains
+        );
         // Never a domain with zero cores.
         assert!(info.l3_domains.iter().all(|d| !d.cpus.is_empty()));
     }

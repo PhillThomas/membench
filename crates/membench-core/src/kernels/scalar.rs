@@ -516,7 +516,10 @@ mod tests {
         // the 8-byte tail path with an odd word count too.
         let b = buf(12 * 1024 + 8, 7);
         // SAFETY: live buffer.
-        assert_eq!(unsafe { super::read(b.ptr(), b.len(), 1) }, b.checksum_words());
+        assert_eq!(
+            unsafe { super::read(b.ptr(), b.len(), 1) },
+            b.checksum_words()
+        );
     }
 
     #[test]
@@ -530,10 +533,9 @@ mod tests {
             let w = unsafe { std::ptr::read_unaligned(b.ptr().add(i * 8) as *const u64) };
             assert_eq!(w, pat, "word {i}");
         }
-        assert_eq!(
-            b.checksum_words(),
-            unsafe { super::read(b.ptr(), b.len(), 1) }
-        );
+        assert_eq!(b.checksum_words(), unsafe {
+            super::read(b.ptr(), b.len(), 1)
+        });
     }
 
     #[test]
@@ -554,7 +556,7 @@ mod tests {
     #[test]
     fn chase_walks_the_cycle() {
         // A three-node cycle in a three-line buffer.
-        let mut b = buf(3 * 64, 0);
+        let b = buf(3 * 64, 0);
         let base = b.ptr() as usize;
         let nodes = [base, base + 64, base + 128];
         for (i, n) in nodes.iter().enumerate() {

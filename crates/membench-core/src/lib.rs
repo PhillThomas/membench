@@ -23,6 +23,13 @@
 //! `unsafe` is confined to [`kernels`], [`alloc`] and [`affinity`], each block
 //! carrying a `// SAFETY:` comment. Everything above that layer is safe Rust.
 
+// Numeric casts are kept in their explicit form even when they are a no-op on
+// x86-64: `libc::c_long`, `size_t` and the `suseconds` fields change width
+// between 32-bit ARM, 64-bit x86 and musl, and the kernels crate is meant to
+// build on all of them. Removing the cast to satisfy the lint would move the
+// width question from the source into the target.
+#![allow(clippy::unnecessary_cast)]
+
 pub mod affinity;
 pub mod alloc;
 pub mod bandwidth;
@@ -52,7 +59,9 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// checksum tests can compare SIMD paths against the scalar reference.
 pub fn ensure_release_build(what: &str) -> Result<()> {
     if cfg!(debug_assertions) {
-        return Err(Error::DebugBuild { what: what.to_string() });
+        return Err(Error::DebugBuild {
+            what: what.to_string(),
+        });
     }
     Ok(())
 }

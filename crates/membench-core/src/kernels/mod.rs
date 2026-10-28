@@ -75,10 +75,7 @@ pub fn detect(isa: Isa) -> bool {
 
 /// Executable ISA paths on this CPU, best first.
 pub fn available() -> Vec<Isa> {
-    Isa::ALL
-        .into_iter()
-        .filter(|isa| detect(*isa))
-        .collect()
+    Isa::ALL.into_iter().filter(|isa| detect(*isa)).collect()
 }
 
 /// The path the runner picks when `--isa` was not given.
@@ -246,7 +243,10 @@ mod tests {
                 // passes cancels itself out and would prove nothing.
                 // SAFETY: live buffer, readable for its whole length.
                 let got = unsafe { k.read(src.ptr(), src.len(), 1) };
-                assert_eq!(got, expect, "read checksum differs for {isa} at {len} bytes");
+                assert_eq!(
+                    got, expect,
+                    "read checksum differs for {isa} at {len} bytes"
+                );
             }
         }
     }
@@ -275,7 +275,11 @@ mod tests {
                 k.copy(src.ptr(), a.ptr_mut(), len, 2);
                 assert_eq!(a.checksum_words(), src.checksum_words(), "copy for {isa}");
                 k.copy_nt(src.ptr(), b.ptr_mut(), len, 2);
-                assert_eq!(b.checksum_words(), src.checksum_words(), "copy-nt for {isa}");
+                assert_eq!(
+                    b.checksum_words(),
+                    src.checksum_words(),
+                    "copy-nt for {isa}"
+                );
             }
         }
     }

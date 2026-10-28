@@ -4,6 +4,13 @@
 //! rendering. All timing lives in `membench-core`, which the UI never reaches
 //! into (PLAN.md: "The UI never touches timing code").
 
+// Numeric casts are kept in their explicit form even when they are a no-op on
+// x86-64: `libc::c_long`, `size_t` and the `suseconds` fields change width
+// between 32-bit ARM, 64-bit x86 and musl, and the kernels crate is meant to
+// build on all of them. Removing the cast to satisfy the lint would move the
+// width question from the source into the target.
+#![allow(clippy::unnecessary_cast)]
+
 mod args;
 mod render;
 mod store;
@@ -35,6 +42,16 @@ extern "C" fn on_sigint(_sig: libc::c_int) {
 }
 
 fn install_interrupt_flag() {
+    // Rust ignores SIGPIPE, so `membench run | head` dies with a panic on the
+    // first write after `head` goes away. `cat` does not do that, and neither
+    // should a command whose whole output is a pipe candidate.
+    //
+    // SAFETY: resetting one signal disposition to the default before any
+    // threads exist; nothing else reads SIGPIPE in this process.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     // SAFETY: replacing the SIGINT handler with a function that only stores to
     // an atomic is safe in a process like this one. The default action (die
     // this instant) is what we deliberately give up so that buffers unmap and
@@ -198,7 +215,9 @@ fn measure_headless(settings: Settings) -> Result<RunResults> {
         eprintln!(
             "membench {} on {} ({})",
             membench_core::time::version(),
-            runner.sys.cpu
+            runner
+                .sys
+                .cpu
                 .model
                 .clone()
                 .unwrap_or_else(|| "Unknown CPU".into()),
@@ -218,7 +237,7 @@ fn measure_headless(settings: Settings) -> Result<RunResults> {
     while let Ok(event) = rx.recv() {
         match event {
             Event::Finished(results) => {
-                finished = Some(results);
+                finished = Some(*results);
                 break;
             }
             Event::Failed(message) => {
@@ -473,8 +492,7 @@ fn self_test() -> Result<ExitCode> {
             let got = unsafe { k.read(buf.ptr(), buf.len(), 1) };
             if got != expect {
                 all_match = false;
-                detail =
-                    format!("{isa} read gave {got:#018x}, expected {expect:#018x} at {len} B");
+                detail = format!("{isa} read gave {got:#018x}, expected {expect:#018x} at {len} B");
             }
         }
     }

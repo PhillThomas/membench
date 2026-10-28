@@ -16,8 +16,8 @@ pub mod governor;
 pub mod topology;
 
 use std::fs;
-use std::io::Read;
 use std::fs::File;
+use std::io::Read;
 
 use crate::result::{CacheInfo, SystemInfo, Warning};
 
@@ -193,7 +193,9 @@ pub fn available_ram_bytes() -> Option<u64> {
 /// measure anyway.)
 fn ballooned() -> bool {
     exists("/sys/devices/system/memory_balloon")
-        || dir_entries("/sys/devices/virtual/misc").iter().any(|d| d.contains("balloon"))
+        || dir_entries("/sys/devices/virtual/misc")
+            .iter()
+            .any(|d| d.contains("balloon"))
 }
 
 pub fn kernel_release() -> Option<String> {
@@ -241,7 +243,10 @@ pub fn gather() -> SystemInfo {
     if topology.sockets > 1 {
         warnings.push(Warning::new(
             "sockets",
-            format!("{} sockets detected: multi-socket tuning is out of scope for v1", topology.sockets),
+            format!(
+                "{} sockets detected: multi-socket tuning is out of scope for v1",
+                topology.sockets
+            ),
         ));
     }
 
@@ -311,11 +316,7 @@ pub fn human_bytes(bytes: u64) -> String {
     // decimal at the largest unit that still fits. "B" is deliberately absent
     // from the exact-match list: every number is a multiple of 1, so including
     // it would swallow the rounded cases.
-    const UNITS: [(&str, u64); 3] = [
-        ("G", 1024 * 1024 * 1024),
-        ("M", 1024 * 1024),
-        ("K", 1024),
-    ];
+    const UNITS: [(&str, u64); 3] = [("G", 1024 * 1024 * 1024), ("M", 1024 * 1024), ("K", 1024)];
     for (suffix, size) in UNITS {
         if bytes >= size && bytes % size == 0 {
             return format!("{}{}", bytes / size, suffix);

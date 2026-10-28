@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
 license = "MIT"
-repository = "https://github.com/phillthomas/membench"
+repository = "http://example.invalid:3000/phillthomas/membench"
 authors = ["Phill Thomas <phill@phillthomas.co.uk>"]
 
 [workspace.dependencies]

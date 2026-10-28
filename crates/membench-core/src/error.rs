@@ -46,10 +46,7 @@ pub enum Error {
     NoCacheLineSize,
 
     #[error("io error on {path}: {os}")]
-    Io {
-        path: String,
-        os: std::io::Error,
-    },
+    Io { path: String, os: std::io::Error },
 
     #[error("not supported on this platform: {0}")]
     Unsupported(&'static str),

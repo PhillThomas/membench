@@ -34,7 +34,7 @@ fn identity() -> (Option<String>, Option<String>) {
             .map(|b| b.as_str().trim().trim_end_matches('\0').to_string())
             .filter(|s| !s.is_empty())
             .or_else(|| cpuinfo_field("model name"));
-        return (vendor, model);
+        (vendor, model)
     }
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     {
@@ -136,12 +136,7 @@ fn feature_list() -> Vec<String> {
 }
 
 fn flavour(vendor: Option<&str>, model: Option<&str>) -> Option<String> {
-    let hay = format!(
-        "{} {}",
-        vendor.unwrap_or(""),
-        model.unwrap_or("")
-    )
-    .to_ascii_uppercase();
+    let hay = format!("{} {}", vendor.unwrap_or(""), model.unwrap_or("")).to_ascii_uppercase();
     for (needle, name) in [
         ("AMD", "AMD"),
         ("INTEL", "Intel"),
@@ -182,7 +177,11 @@ mod tests {
         #[cfg(target_arch = "x86_64")]
         {
             // x86-64 implies SSE2 by definition.
-            assert!(cpu.features.contains(&"SSE2".to_string()), "{:?}", cpu.features);
+            assert!(
+                cpu.features.contains(&"SSE2".to_string()),
+                "{:?}",
+                cpu.features
+            );
         }
     }
 
@@ -192,10 +191,7 @@ mod tests {
             flavour(Some("GenuineIntel"), None).as_deref(),
             Some("Intel")
         );
-        assert_eq!(
-            flavour(Some("AuthenticAMD"), None).as_deref(),
-            Some("AMD")
-        );
+        assert_eq!(flavour(Some("AuthenticAMD"), None).as_deref(), Some("AMD"));
         assert_eq!(
             flavour(None, Some("AMD Ryzen 5 PRO 5650G with Radeon Graphics")).as_deref(),
             Some("AMD")

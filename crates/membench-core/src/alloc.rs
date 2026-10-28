@@ -286,7 +286,11 @@ impl Buffer {
         // (PLAN.md rule 7: verify the huge pages, and say when they are not
         // granted).
         let mut collapse_note: Option<String> = None;
-        if want_huge && self.opts.pages == PageKind::TwoM && read_bytes == 0 && !self.collapse_tried.get() {
+        if want_huge
+            && self.opts.pages == PageKind::TwoM
+            && read_bytes == 0
+            && !self.collapse_tried.get()
+        {
             self.collapse_tried.set(true);
             match self.collapse() {
                 Ok(()) => {
@@ -528,7 +532,10 @@ mod tests {
             parse_smaps_range("7f8a1c000000-7f8a1c200000 rw-p 00000000 00:12 345 /x"),
             Some((0x7f8a1c000000, 0x7f8a1c200000))
         );
-        assert_eq!(parse_kb_field("AnonHugePages:    2048 kB", "AnonHugePages:"), Some(2 << 20));
+        assert_eq!(
+            parse_kb_field("AnonHugePages:    2048 kB", "AnonHugePages:"),
+            Some(2 << 20)
+        );
         assert_eq!(parse_smaps_range("Rss: 12 kB"), None);
     }
 
@@ -543,11 +550,18 @@ mod tests {
         assert_eq!(s.requested, PageKind::TwoM);
         match s.actual {
             PageKind::TwoM => {
-                assert!(s.huge_bytes.unwrap_or(0) > 0, "claims 2 MiB pages with none: {s:?}")
+                assert!(
+                    s.huge_bytes.unwrap_or(0) > 0,
+                    "claims 2 MiB pages with none: {s:?}"
+                )
             }
             PageKind::FourK => {
                 assert!(s.note.is_some(), "no explanation for the fallback: {s:?}");
-                assert_eq!(s.huge_bytes.unwrap_or(0), 0, "fallback with huge bytes: {s:?}");
+                assert_eq!(
+                    s.huge_bytes.unwrap_or(0),
+                    0,
+                    "fallback with huge bytes: {s:?}"
+                );
             }
             PageKind::OneG => panic!("asked for 2 MiB, reported 1 GiB: {s:?}"),
         }

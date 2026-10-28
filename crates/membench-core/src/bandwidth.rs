@@ -65,13 +65,7 @@ impl Work {
     /// default, `--copy-counts-both` to change it.)
     pub fn bytes_multiplier(self, copy_counts_both: bool) -> u64 {
         match self {
-            Work::Copy | Work::CopyNt => {
-                if copy_counts_both {
-                    2
-                } else {
-                    1
-                }
-            }
+            Work::Copy | Work::CopyNt if copy_counts_both => 2,
             _ => 1,
         }
     }
@@ -139,27 +133,30 @@ pub fn run(job: &Job) -> Result<CellResult> {
         let work = job.work;
         let level = plan.level;
         let cpu = *cpu;
-        let index = index;
 
-        handles.push(thread::Builder::new().name(format!("membench-{cpu}")).spawn(move || {
-            let outcome = worker(
-                cpu,
-                index,
-                bytes_per_thread,
-                work,
-                &settings,
-                kernels,
-                &barrier,
-                &reps,
-                &cancel,
-                events.as_ref(),
-                level,
-            );
-            if outcome.error.is_some() {
-                failures.fetch_add(1, Ordering::SeqCst);
-            }
-            outcome
-        }));
+        handles.push(
+            thread::Builder::new()
+                .name(format!("membench-{cpu}"))
+                .spawn(move || {
+                    let outcome = worker(
+                        cpu,
+                        index,
+                        bytes_per_thread,
+                        work,
+                        &settings,
+                        kernels,
+                        &barrier,
+                        &reps,
+                        &cancel,
+                        events.as_ref(),
+                        level,
+                    );
+                    if outcome.error.is_some() {
+                        failures.fetch_add(1, Ordering::SeqCst);
+                    }
+                    outcome
+                }),
+        );
     }
 
     let mut outcomes = Vec::with_capacity(plan.threads);
@@ -197,6 +194,11 @@ pub fn run(job: &Job) -> Result<CellResult> {
 }
 
 /// The per-thread body: pin → allocate → prefault → warm up → trials.
+///
+/// Eleven arguments is more than the lint likes, but this is a thread entry
+/// point: every one of them is something the thread owns outright, and a
+/// wrapper struct would only move the same list somewhere else.
+#[allow(clippy::too_many_arguments)]
 fn worker(
     cpu: usize,
     index: usize,
@@ -275,7 +277,7 @@ fn worker(
     // Every thread computes its own rep count; the smallest one wins so the
     // threads stay in step (a thread that finishes early idles in L3).
     let target = Duration::from_millis(settings.duration_ms.max(1));
-    let mine = (target.as_nanos() / warm.as_nanos().max(1) as u128).max(1) as usize;
+    let mine = (target.as_nanos() / warm.as_nanos().max(1)).max(1) as usize;
     barrier.wait();
     if index == 0 {
         reps_shared.store(mine, Ordering::SeqCst);
@@ -374,11 +376,7 @@ impl Work {
 /// Fold the per-thread samples into one number per trial.
 fn aggregate(job: &Job, outcomes: &[Outcome]) -> CellResult {
     let plan = job.plan;
-    let trials = outcomes
-        .iter()
-        .map(|o| o.samples.len())
-        .min()
-        .unwrap_or(0);
+    let trials = outcomes.iter().map(|o| o.samples.len()).min().unwrap_or(0);
 
     let mut values: Vec<f64> = Vec::with_capacity(trials);
     let mut best_bytes: u128 = 0;
@@ -409,7 +407,7 @@ fn aggregate(job: &Job, outcomes: &[Outcome]) -> CellResult {
         if gbps > best_value {
             best_value = gbps;
             best_bytes = bytes;
-            best_duration_us = ((end - start).as_micros() as u128).max(1);
+            best_duration_us = (end - start).as_micros().max(1);
         }
     }
 
@@ -537,34 +535,37 @@ mod tests {
     use crate::sizes;
     use crate::sysinfo;
 
-    fn job(work: Work, level: Level, bytes: usize, threads: usize) -> (Job<'static>, SystemInfoOwned)
-    {
+    fn job(
+        work: Work,
+        level: Level,
+        bytes: usize,
+        threads: usize,
+    ) -> (Job<'static>, SystemInfoOwned) {
         // Owned system info: `Job` borrows it, so leak it for the test.
         let sys: &'static SystemInfo = Box::leak(Box::new(sysinfo::gather()));
-        let settings: &'static Settings = Box::leak(
-            Box::new(Settings {
-                threads: Some(threads),
-                trials: 2,
-                duration_ms: 20,
-                mlock: false,
-                ..Default::default()
-            }),
-        );
-        let mut plan = sizes::CellPlan {
+        let settings: &'static Settings = Box::leak(Box::new(Settings {
+            threads: Some(threads),
+            trials: 2,
+            duration_ms: 20,
+            mlock: false,
+            ..Default::default()
+        }));
+        let plan = sizes::CellPlan {
             level,
             threads,
-            cpus: sys.topology.core_cpus.iter().take(threads).copied().collect(),
+            cpus: sys
+                .topology
+                .core_cpus
+                .iter()
+                .take(threads)
+                .copied()
+                .collect(),
             bytes_per_thread: bytes,
             buffers_per_thread: 1,
             total_bytes: bytes * threads,
             cache_bytes: None,
             derivation: "test plan".to_string(),
             note: None,
-        };
-        plan.cpus = if work.needs_two_buffers() {
-            plan.cpus.clone()
-        } else {
-            plan.cpus.clone()
         };
         let plan: &'static CellPlan = Box::leak(Box::new(plan));
         let job = Job {

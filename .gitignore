@@ -25,7 +25,10 @@ perf.data
 perf.data.old
 flamegraph.svg
 
-# The C reference benchmarks build in place (see reference/README.md).
+# The C reference benchmarks build in place and write their result dumps here
+# (see reference/README.md). Only the sources belong in git.
 /reference/mbstream
 /reference/mblatency
 /reference/*.o
+/reference/bin/
+/reference/out/

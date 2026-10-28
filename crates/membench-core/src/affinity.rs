@@ -116,7 +116,9 @@ pub fn current_cpu() -> Option<usize> {
 /// The kernel intersects the requested mask with the CPUs that exist, so
 /// setting all 1024 bits is the portable way to say "everywhere".
 pub fn unpin_current() -> Result<()> {
-    let mask = Cpumask { words: [u64::MAX; 16] };
+    let mask = Cpumask {
+        words: [u64::MAX; 16],
+    };
     // SAFETY: as in `pin_current`; the kernel drops bits for CPUs that do not
     // exist, so the mask is never empty on a machine with at least one CPU.
     let rc = unsafe {
@@ -186,7 +188,7 @@ pub fn memlock_limit_bytes() -> Option<u64> {
     if lim.rlim_cur == libc::RLIM_INFINITY {
         Some(u64::MAX)
     } else {
-        Some(lim.rlim_cur as u64)
+        Some(lim.rlim_cur)
     }
 }
 

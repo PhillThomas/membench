@@ -32,7 +32,7 @@ pub fn detect(_cpu: &CpuInfo) -> MemoryInfo {
     if info.modules.is_empty() {
         info.modules = edac_modules();
     }
-    info.populated_modules = (!info.modules.is_empty()).then(|| info.modules.len());
+    info.populated_modules = (!info.modules.is_empty()).then_some(info.modules.len());
     info.access_note = note;
 
     info.spd = spd_modules();
@@ -113,11 +113,7 @@ fn smbios_records(blob: &[u8]) -> Vec<SmbiosRecord> {
             while p < blob.len() && blob[p] != 0 {
                 p += 1;
             }
-            strings.push(
-                String::from_utf8_lossy(&blob[start..p])
-                    .trim()
-                    .to_string(),
-            );
+            strings.push(String::from_utf8_lossy(&blob[start..p]).trim().to_string());
             p += 1;
         }
         // Advance past the string area and its final NUL.
@@ -141,7 +137,10 @@ fn smbios_records(blob: &[u8]) -> Vec<SmbiosRecord> {
 /// kernel blocked root too.
 fn smbios_type17() -> (Vec<Dimm>, Option<String>) {
     if !exists(DMI_PATH) {
-        return (Vec::new(), Some("no SMBIOS access: this kernel exposes no DMI tables".into()));
+        return (
+            Vec::new(),
+            Some("no SMBIOS access: this kernel exposes no DMI tables".into()),
+        );
     }
     let blob = match read_bytes(DMI_PATH, 1 << 20) {
         Some(b) => b,
@@ -225,8 +224,8 @@ fn decode_memory_device(r: &SmbiosRecord) -> Option<Dimm> {
         return None;
     }
 
-    let speed = u16(r, 0x15).filter(|v| *v != 0 && *v != 0xFFFF).map(|v| v as u32);
-    let configured = u16(r, 0x20).filter(|v| *v != 0 && *v != 0xFFFF).map(|v| v as u32);
+    let speed = u16(r, 0x15).filter(|v| *v != 0 && *v != 0xFFFF);
+    let configured = u16(r, 0x20).filter(|v| *v != 0 && *v != 0xFFFF);
     let type_detail = u16(r, 0x13).unwrap_or(0);
     let mut device_type = memory_type_name(byte(r, 0x12).unwrap_or(0));
 
@@ -352,7 +351,11 @@ fn spd_modules() -> Vec<SpdTimings> {
         }
         for dev in dir_entries(&base) {
             // Device directories look like `0-0052`; skip `bind`, `uevent`, …
-            if !dev.contains('-') || !dev[..dev.find('-').unwrap_or(0)].chars().all(|c| c.is_ascii_digit()) {
+            if !dev.contains('-')
+                || !dev[..dev.find('-').unwrap_or(0)]
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+            {
                 continue;
             }
             let path = format!("{base}/{dev}/eeprom");
@@ -429,7 +432,10 @@ fn decode_spd(generation: &str, device: &str, b: &[u8]) -> SpdTimings {
     };
     let Some(mtb) = mtb_ns else {
         if let Some(m) = module_type {
-            t.note = format!("{m} module; unsupported SPD time base {:#04X}, timings Unknown", b[17]);
+            t.note = format!(
+                "{m} module; unsupported SPD time base {:#04X}, timings Unknown",
+                b[17]
+            );
         }
         return t;
     };
@@ -522,9 +528,9 @@ mod tests {
         b.push(0x00); // 0x19 asset tag: absent
         b.push(0x03); // 0x1A part number -> string 3
         b.push(0x01); // 0x1B attributes: rank 1
-        // 0x1C..0x21: extended size (4) + configured speed (2). That is the end
-        // of the formatted area: length is 0x22, so anything further here would
-        // be read as the string area and swallow the strings below.
+                      // 0x1C..0x21: extended size (4) + configured speed (2). That is the end
+                      // of the formatted area: length is 0x22, so anything further here would
+                      // be read as the string area and swallow the strings below.
         b.extend_from_slice(&[0x00; 6]);
         // string area
         b.extend_from_slice(b"Bank 0\0");
@@ -574,7 +580,7 @@ mod tests {
         assert!(smbios_records(&[]).is_empty());
         assert!(smbios_records(&[17]).is_empty());
         assert!(smbios_records(&[17, 200, 0, 0]).is_empty()); // length past the end
-        // A record claiming length 0 must not spin forever.
+                                                              // A record claiming length 0 must not spin forever.
         assert!(smbios_records(&[17, 0, 0, 0, 0]).is_empty());
         // Random bytes: must terminate and must not panic.
         let junk: Vec<u8> = (0..512u32).map(|i| (i * 7 % 251) as u8).collect();
@@ -589,7 +595,11 @@ mod tests {
         assert_eq!(memory_type_name(0x02), "Unknown");
         assert_eq!(memory_type_name(0x77), "Unknown (code 0x77)");
         assert_eq!(form_factor_name(0x09).as_deref(), Some("DIMM"));
-        assert_eq!(form_factor_name(0x03), None, "unverified code stays unnamed");
+        assert_eq!(
+            form_factor_name(0x03),
+            None,
+            "unverified code stays unnamed"
+        );
     }
 
     #[test]
@@ -623,7 +633,11 @@ mod tests {
         let t = decode_spd("DDR4", "0-0052", &b);
         assert_eq!(t.tAA_ns, None);
         assert_eq!(t.cas_string, None);
-        assert!(t.note.contains("Unknown") || t.note.contains("implausible"), "{}", t.note);
+        assert!(
+            t.note.contains("Unknown") || t.note.contains("implausible"),
+            "{}",
+            t.note
+        );
         assert_eq!(t.generation.as_deref(), Some("DDR4"));
     }
 
@@ -648,7 +662,9 @@ mod tests {
     fn detect_on_this_machine_is_honest() {
         let cpu = crate::sysinfo::cpu::detect();
         let m = detect(&cpu);
-        assert!(m.total_bytes.is_some() || crate::sysinfo::read_to_string("/proc/meminfo").is_none());
+        assert!(
+            m.total_bytes.is_some() || crate::sysinfo::read_to_string("/proc/meminfo").is_none()
+        );
         assert!(m.populated_modules.unwrap_or(0) == m.modules.len());
         // Whatever we found, the channel count is never invented.
         assert_eq!(m.channels, None);

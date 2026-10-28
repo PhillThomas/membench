@@ -156,7 +156,6 @@ impl Common {
         }
         Ok(s)
     }
-
 }
 
 fn parse_levels(raw: &str) -> Result<Vec<Level>, String> {

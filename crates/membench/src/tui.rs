@@ -14,22 +14,22 @@ use std::thread;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use crossterm::event::{
-    self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers,
-};
+use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Axis, Block, Chart, Dataset, Gauge, GraphType, Paragraph, Wrap};
-use ratatui::backend::CrosstermBackend;
 use ratatui::{Frame, Terminal};
 
-use membench_core::result::{CellResult, Column, Level, Op, RunResults, Settings, Sweep, SystemInfo};
+use membench_core::result::{
+    CellResult, Column, Level, Op, RunResults, Settings, Sweep, SystemInfo,
+};
 use membench_core::runner::{Event, Runner};
 use membench_core::sysinfo;
 
@@ -39,7 +39,9 @@ use crate::store;
 /// Everything the two producer threads send to the UI thread.
 enum Msg {
     Key(crossterm::event::KeyEvent),
-    Progress(Event),
+    /// Boxed for the same reason as the runner's variant: an `Event` is much
+    /// larger than a key press, and this is the queue both travel down.
+    Progress(Box<Event>),
     /// The worker finished or died; the UI thread may exit.
     Idle,
 }
@@ -133,7 +135,7 @@ impl App {
         let forward = tx.clone();
         thread::spawn(move || {
             while let Ok(event) = erx.recv() {
-                if forward.send(Msg::Progress(event)).is_err() {
+                if forward.send(Msg::Progress(Box::new(event))).is_err() {
                     break;
                 }
             }
@@ -146,7 +148,7 @@ impl App {
             let worker = match Runner::prepare(settings) {
                 Ok(runner) => runner,
                 Err(e) => {
-                    let _ = tx.send(Msg::Progress(Event::Failed(e.to_string())));
+                    let _ = tx.send(Msg::Progress(Box::new(Event::Failed(e.to_string()))));
                     let _ = tx.send(Msg::Idle);
                     return;
                 }
@@ -154,7 +156,7 @@ impl App {
             // `Event::Finished` already travels on the progress channel, so the
             // worker only has to announce that it is finished here.
             if let Err(e) = worker.run(&cancel, Some(etx)) {
-                let _ = done.send(Msg::Progress(Event::Failed(e.to_string())));
+                let _ = done.send(Msg::Progress(Box::new(Event::Failed(e.to_string()))));
             }
             let _ = done.send(Msg::Idle);
         });
@@ -174,9 +176,7 @@ impl App {
                 self.cell_label = format!("{} {}", level.short(), op.label());
                 self.trial = (0, self.settings.trials);
             }
-            Event::Trial {
-                trial, trials, ..
-            } => {
+            Event::Trial { trial, trials, .. } => {
                 self.trial = (trial, trials);
             }
             Event::CellDone(cell) => {
@@ -207,6 +207,7 @@ impl App {
                 }
             }
             Event::Finished(results) => {
+                let results = *results;
                 self.running = false;
                 self.clock_mhz = results.clock.as_ref().map(|c| c.mhz);
                 self.warnings = results
@@ -229,7 +230,10 @@ impl App {
                         self.sweep = Some(sweep.clone());
                     }
                 }
-                let secs = self.started.map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
+                let secs = self
+                    .started
+                    .map(|s| s.elapsed().as_secs_f64())
+                    .unwrap_or(0.0);
                 self.status = format!(
                     "{} cells in {secs:.1} s · d details · l sweep · e export · r again · q quit",
                     results.cells.len()
@@ -252,12 +256,14 @@ impl App {
                 let mut r = RunResults::new(self.system.clone(), self.settings.clone());
                 r.cells = self.cells.clone();
                 r.sweep = self.sweep.clone();
-                r.clock = self.clock_mhz.map(|mhz| membench_core::result::ClockMeasurement {
-                    hz: mhz * 1e6,
-                    mhz,
-                    cpu: 0,
-                    method: "measured".to_string(),
-                });
+                r.clock = self
+                    .clock_mhz
+                    .map(|mhz| membench_core::result::ClockMeasurement {
+                        hz: mhz * 1e6,
+                        mhz,
+                        cpu: 0,
+                        method: "measured".to_string(),
+                    });
                 r
             }
         }
@@ -333,7 +339,8 @@ fn pump(terminal: &mut Term, app: &mut App, start_now: bool) -> Result<()> {
     let key_thread = thread::spawn(move || loop {
         match event::read() {
             Ok(TermEvent::Key(key)) => {
-                let quit = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+                let quit =
+                    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
                 if keys.send(Msg::Key(key)).is_err() {
                     break;
                 }
@@ -354,70 +361,70 @@ fn pump(terminal: &mut Term, app: &mut App, start_now: bool) -> Result<()> {
     loop {
         let message = rx.recv().context("the event channel closed")?;
         match message {
-            Msg::Progress(other) => app.handle_progress(other),
+            Msg::Progress(other) => app.handle_progress(*other),
             Msg::Idle => {
                 app.running = false;
                 app.dirty = true;
             }
             Msg::Key(key) if key.kind == KeyEventKind::Press => {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc if !app.running => break,
-                KeyCode::Char('q') => {
-                    app.stop();
-                }
-                KeyCode::Esc if app.view != View::Grid => app.view = View::Grid,
-                KeyCode::Esc => app.stop(),
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.stop();
-                }
-                KeyCode::Char('s') | KeyCode::Char('r') if !app.running => {
-                    app.view = View::Grid;
-                    app.start(tx.clone());
-                }
-                KeyCode::Char('l') => {
-                    if app.sweep.is_none() && !app.running {
-                        let mut settings = app.settings.clone();
-                        settings.levels = vec![];
-                        settings.ops = vec![Op::Latency];
-                        settings.with_sweep = true;
-                        app.settings = settings;
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc if !app.running => break,
+                    KeyCode::Char('q') => {
+                        app.stop();
+                    }
+                    KeyCode::Esc if app.view != View::Grid => app.view = View::Grid,
+                    KeyCode::Esc => app.stop(),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.stop();
+                    }
+                    KeyCode::Char('s') | KeyCode::Char('r') if !app.running => {
+                        app.view = View::Grid;
                         app.start(tx.clone());
                     }
-                    app.view = View::Sweep;
-                }
-                KeyCode::Char('d') => {
-                    app.view = if app.view == View::Details {
-                        View::Grid
-                    } else {
-                        View::Details
-                    };
-                }
-                KeyCode::Char('e') => app.export(),
-                KeyCode::Char('?') => {
-                    app.view = if app.view == View::Help {
-                        View::Grid
-                    } else {
-                        View::Help
-                    };
-                }
-                KeyCode::Up | KeyCode::Char('k') => app.row = app.row.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    app.row = (app.row + 1).min(app.rows().len().saturating_sub(1));
-                }
-                KeyCode::Left => app.col = app.col.saturating_sub(1),
-                KeyCode::Right => app.col = (app.col + 1).min(3),
-                KeyCode::Tab => {
-                    app.col = (app.col + 1) % 4;
-                    if app.col == 0 {
-                        app.row = (app.row + 1) % app.rows().len().max(1);
+                    KeyCode::Char('l') => {
+                        if app.sweep.is_none() && !app.running {
+                            let mut settings = app.settings.clone();
+                            settings.levels = vec![];
+                            settings.ops = vec![Op::Latency];
+                            settings.with_sweep = true;
+                            app.settings = settings;
+                            app.start(tx.clone());
+                        }
+                        app.view = View::Sweep;
                     }
+                    KeyCode::Char('d') => {
+                        app.view = if app.view == View::Details {
+                            View::Grid
+                        } else {
+                            View::Details
+                        };
+                    }
+                    KeyCode::Char('e') => app.export(),
+                    KeyCode::Char('?') => {
+                        app.view = if app.view == View::Help {
+                            View::Grid
+                        } else {
+                            View::Help
+                        };
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => app.row = app.row.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        app.row = (app.row + 1).min(app.rows().len().saturating_sub(1));
+                    }
+                    KeyCode::Left => app.col = app.col.saturating_sub(1),
+                    KeyCode::Right => app.col = (app.col + 1).min(3),
+                    KeyCode::Tab => {
+                        app.col = (app.col + 1) % 4;
+                        if app.col == 0 {
+                            app.row = (app.row + 1) % app.rows().len().max(1);
+                        }
+                    }
+                    KeyCode::Char(c @ '1'..='4') if app.view == View::Grid => {
+                        app.col = c as usize - '1' as usize;
+                    }
+                    _ => {}
                 }
-                KeyCode::Char(c @ '1'..='4') if app.view == View::Grid => {
-                    app.col = c as usize - '1' as usize;
-                }
-                _ => {}
-            }
-            app.dirty = true;
+                app.dirty = true;
             }
             Msg::Key(_) => {}
         }
@@ -510,7 +517,10 @@ fn draw_grid(frame: &mut Frame, app: &mut App, area: Rect) {
                 .fg(Color::Cyan),
         ));
     }
-    frame.render_widget(Paragraph::new(header), Rect::new(inner.x, inner.y, inner.width, 1));
+    frame.render_widget(
+        Paragraph::new(header),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
 
     for (row_index, level) in rows.iter().enumerate() {
         let y = inner.y + 1 + row_index as u16;
@@ -519,7 +529,11 @@ fn draw_grid(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         let selected = row_index == app.row;
         let mut line = Line::from(Span::styled(
-            format!("{:<w$} ", level.grid_label(), w = (label_width + 1) as usize),
+            format!(
+                "{:<w$} ",
+                level.grid_label(),
+                w = (label_width + 1) as usize
+            ),
             if selected {
                 Style::default().add_modifier(Modifier::BOLD)
             } else {
@@ -528,19 +542,21 @@ fn draw_grid(frame: &mut Frame, app: &mut App, area: Rect) {
         ));
         for (col_index, column) in columns.iter().enumerate() {
             let measuring = app.running
-                && app
-                    .cell_label
-                    .starts_with(&level.short().to_string())
-                && app
-                    .cell_label
-                    .ends_with(column_op_label(*column).as_str());
+                && app.cell_label.starts_with(&level.short().to_string())
+                && app.cell_label.ends_with(column_op_label(*column).as_str());
             let text = if measuring {
                 let (trial, trials) = app.trial;
                 format!("{} {trial}/{trials}", spinner(app),)
             } else {
-                match app.cells.iter().find(|c| c.level == *level && c.headline && c.op.column() == *column)
-                    .or_else(|| app.cells.iter().find(|c| c.level == *level && c.op.column() == *column))
-                {
+                match app
+                    .cells
+                    .iter()
+                    .find(|c| c.level == *level && c.headline && c.op.column() == *column)
+                    .or_else(|| {
+                        app.cells
+                            .iter()
+                            .find(|c| c.level == *level && c.op.column() == *column)
+                    }) {
                     Some(cell) => render::fmt_value(cell.value, &cell.unit),
                     None => "—".to_string(),
                 }
@@ -575,7 +591,10 @@ fn column_op_label(column: Column) -> String {
 
 fn spinner(app: &App) -> &'static str {
     const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
-    let elapsed = app.cell_started.map(|s| s.elapsed().as_millis()).unwrap_or(0);
+    let elapsed = app
+        .cell_started
+        .map(|s| s.elapsed().as_millis())
+        .unwrap_or(0);
     FRAMES[(elapsed / 80 % 8) as usize]
 }
 
@@ -650,8 +669,14 @@ fn draw_details(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::default(),
-        Line::from(format!("  value    {}", render::fmt_value(cell.value, &cell.unit))),
-        Line::from(format!("  best     {}", render::fmt_value(cell.best, &cell.unit))),
+        Line::from(format!(
+            "  value    {}",
+            render::fmt_value(cell.value, &cell.unit)
+        )),
+        Line::from(format!(
+            "  best     {}",
+            render::fmt_value(cell.best, &cell.unit)
+        )),
         Line::from(format!(
             "  median   {}   mean {}   stddev {:.3}",
             render::fmt_value(cell.median, &cell.unit),
@@ -740,18 +765,12 @@ fn draw_sweep(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(sweep) = &app.sweep else {
-        frame.render_widget(
-            Paragraph::new("no sweep yet — press l to run one"),
-            inner,
-        );
+        frame.render_widget(Paragraph::new("no sweep yet — press l to run one"), inner);
         return;
     };
     if sweep.points.len() < 2 {
         frame.render_widget(
-            Paragraph::new(format!(
-                "{} point(s) so far",
-                sweep.points.len()
-            )),
+            Paragraph::new(format!("{} point(s) so far", sweep.points.len())),
             inner,
         );
         return;
@@ -777,20 +796,16 @@ fn draw_sweep(frame: &mut Frame, app: &App, area: Rect) {
         .data(&points)];
 
     let chart = Chart::new(datasets)
-        .x_axis(
-            Axis::default()
-                .bounds([x_min, x_max])
-                .labels(vec![
-                    label_for_pow2(x_min),
-                    label_for_pow2((x_min + x_max) / 2.0),
-                    label_for_pow2(x_max),
-                ]),
-        )
-        .y_axis(
-            Axis::default()
-                .bounds([0.0, y_max])
-                .labels(vec!["0".to_string(), format!("{:.0}", y_max / 2.0), format!("{y_max:.0}")]),
-        );
+        .x_axis(Axis::default().bounds([x_min, x_max]).labels(vec![
+            label_for_pow2(x_min),
+            label_for_pow2((x_min + x_max) / 2.0),
+            label_for_pow2(x_max),
+        ]))
+        .y_axis(Axis::default().bounds([0.0, y_max]).labels(vec![
+            "0".to_string(),
+            format!("{:.0}", y_max / 2.0),
+            format!("{y_max:.0}"),
+        ]));
     frame.render_widget(chart, inner);
 }
 
@@ -829,9 +844,11 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         ),
     ];
     let _ = app;
-    frame.render_widget(Paragraph::new(Text::from(text)).wrap(Wrap { trim: false }), inner);
+    frame.render_widget(
+        Paragraph::new(Text::from(text)).wrap(Wrap { trim: false }),
+        inner,
+    );
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -939,7 +956,7 @@ mod tests {
             points: (0..12)
                 .map(|i| membench_core::result::SweepPoint {
                     size_bytes: 4096usize << (i * 2),
-                    nodes: 4096usize << (i * 2) / 64,
+                    nodes: 4096usize << ((i * 2) / 64),
                     ns: 4.0 + i as f64 * 3.0,
                     cycles: Some(17.0 + i as f64 * 13.0),
                     trials: 3,
