@@ -1,0 +1,21 @@
+[package]
+name = "membench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "AIDA64-style cache and memory benchmark for Linux terminals"
+
+[[bin]]
+name = "membench"
+path = "src/main.rs"
+
+[dependencies]
+membench-core = { path = "../membench-core", version = "0.1.0" }
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+libc = "0.2"

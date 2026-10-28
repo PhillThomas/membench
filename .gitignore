@@ -1,0 +1,31 @@
+# Build output. The release binary is what everyone runs; it does not belong in
+# the repository.
+/target
+**/*.rs.bk
+
+# Local result dumps from `membench run --json` and `membench sweep`.
+*.json
+!fixtures/**/*.json
+*.csv
+
+# Secrets and local overrides. Never commit a token, however convenient the test
+# box is.
+*.env
+.env
+*.token
+token*
+.gogs-token
+.cursor/
+.vscode/
+
+# Editor and profiler noise.
+*.swp
+*.log
+perf.data
+perf.data.old
+flamegraph.svg
+
+# The C reference benchmarks build in place (see reference/README.md).
+/reference/mbstream
+/reference/mblatency
+/reference/*.o
