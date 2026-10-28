@@ -1,0 +1,52 @@
+# Maintainer: Phill Thomas <phill@phillthomas.co.uk>
+#
+# Built from the private Gogs checkout over SSH, which is how this project is
+# distributed: `makepkg -si` in this directory clones the repo with your own
+# key. Building from a working copy instead (the usual case while developing):
+#
+#   cargo build --release && pkgver=$(./target/release/membench --version | awk '{print $2}')
+#
+# …and then `makepkg -si --skipdownloadsources` with `source` pointed at the
+# local tree, or simply install the binary by hand:
+#
+#   sudo install -Dm755 target/release/membench /usr/local/bin/membench
+#
+# No icon file is shipped; the .desktop refers to a stock theme icon.
+pkgname=membench
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='AIDA64-style cache and memory benchmark for the Linux terminal'
+arch=('x86_64' 'aarch64')
+url='http://example.invalid:3000/phillthomas/membench'
+license=('MIT')
+makedepends=('rust' 'cargo')
+depends=('glibc')
+optdepends=('python3: for scripts/tui-smoke.py and the reference comparison')
+source=('membench::git+ssh://user@example.invalid:22/phillthomas/membench.git#branch=main')
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/membench"
+  # The version lives in the workspace manifest, not in a tag.
+  awk -F'"' '/^version = /{print $2; exit}' Cargo.toml
+}
+
+build() {
+  cd "$srcdir/membench"
+  cargo build --release --workspace --locked
+}
+
+check() {
+  cd "$srcdir/membench"
+  cargo test --release --workspace
+  ./scripts/check-kernels-asm.sh
+}
+
+package() {
+  cd "$srcdir/membench"
+  install -Dm755 "target/release/membench" "$pkgdir/usr/bin/membench"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 packaging/membench.desktop \
+    "$pkgdir/usr/share/applications/membench.desktop"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

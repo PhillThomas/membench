@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Memory Benchmark
+GenericName=Cache and memory benchmark
+Comment=Measure cache and memory bandwidth and latency
+Exec=membench
+Icon=utilities-system-monitor
+Terminal=true
+Categories=System;Monitor;
+Keywords=benchmark;memory;cache;bandwidth;latency;
+StartupNotify=false
