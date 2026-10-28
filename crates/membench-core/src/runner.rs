@@ -283,8 +283,13 @@ impl Runner {
             }
         }
 
-        if results.cells.is_empty() {
-            return Err(Error::Unsupported("no cells could be measured"));
+        // A sweep-only invocation legitimately has no grid cells; refusing one
+        // would throw away a complete ladder because a different table was
+        // empty.
+        if results.cells.is_empty() && results.sweep.is_none() {
+            return Err(Error::Unsupported(
+                "nothing was measured: no grid cells and no sweep",
+            ));
         }
         if let Some(tx) = &events {
             let _ = tx.send(Event::Finished(Box::new(results.clone())));

@@ -285,9 +285,18 @@ impl Buffer {
         // when it fails we say so rather than reporting pages we do not have
         // (PLAN.md rule 7: verify the huge pages, and say when they are not
         // granted).
+        // A mapping smaller than one huge page cannot be huge-backed, and the
+        // arithmetic below would happily say otherwise: `expected` rounds down
+        // to zero and `huge_bytes >= 0` looks like a grant. The L1 and L2 cells
+        // run on buffers of a few KiB, so this case is the common case, not an
+        // edge one.
+        let page_bytes = self.opts.pages.bytes();
+        let too_small = want_huge && self.len < page_bytes;
+
         let mut collapse_note: Option<String> = None;
         if want_huge
             && self.opts.pages == PageKind::TwoM
+            && !too_small
             && read_bytes == 0
             && !self.collapse_tried.get()
         {
@@ -303,24 +312,27 @@ impl Buffer {
         }
         let huge_bytes = huge_bytes.unwrap_or(read_bytes);
 
-        let expected = (self.len / self.opts.pages.bytes()) * self.opts.pages.bytes();
+        let expected = (self.len / page_bytes) * page_bytes;
         let granted = if want_huge {
-            huge_bytes as usize >= expected.saturating_sub(self.opts.pages.bytes())
+            !too_small && huge_bytes as usize >= expected.saturating_sub(page_bytes)
         } else {
             huge_bytes == 0
         };
 
-        let actual = if want_huge {
-            if granted {
-                self.opts.pages
-            } else {
-                PageKind::FourK
-            }
+        let actual = if granted {
+            self.opts.pages
         } else {
             PageKind::FourK
         };
 
-        let note = if want_huge && !granted {
+        let note = if too_small {
+            Some(format!(
+                "a {} byte mapping is smaller than one {} page, so it is backed by 4 KiB pages \
+                 and there is nothing to verify",
+                self.len,
+                self.opts.pages.label()
+            ))
+        } else if want_huge && !granted {
             Some(format!(
                 "requested {pages} pages but {field} shows {huge_bytes} bytes of huge-backed \
                  memory for a {len} byte mapping (transparent hugepages setting: {}; \
@@ -575,5 +587,32 @@ mod tests {
         )
         .expect("map");
         assert_eq!(plain.page_status().actual, PageKind::FourK);
+    }
+
+    #[test]
+    fn a_mapping_smaller_than_a_huge_page_is_not_reported_as_huge() {
+        // The L1 and L2 cells allocate tens of KiB while `--pages 2m` is still
+        // in effect. Calling that "2m verified" is the exact lie rule 7 exists
+        // to prevent, and the arithmetic in `page_status` used to do it: the
+        // expected huge-backed byte count rounds down to zero, and zero bytes
+        // of huge memory satisfies "at least zero".
+        let mut b = Buffer::new(
+            64 * 1024,
+            AllocOpts {
+                pages: PageKind::TwoM,
+                ..Default::default()
+            },
+        )
+        .expect("map 64 KiB");
+        b.fill_words(7);
+        let s = b.page_status();
+        assert_eq!(s.requested, PageKind::TwoM);
+        assert_eq!(s.actual, PageKind::FourK, "{s:?}");
+        assert_eq!(s.huge_bytes.unwrap_or(0), 0, "{s:?}");
+        let note = s.note.clone().unwrap_or_default();
+        assert!(
+            note.contains("smaller than one") || note.contains("4 KiB"),
+            "the note does not explain the size: {note}"
+        );
     }
 }

@@ -375,12 +375,12 @@ pub fn system_panel(sys: &SystemInfo) -> String {
     // SPD timings are the module's rated values, never its running values, and
     // the panel says so next to the device that was read.
     for t in &mem.spd {
-        let mut bits = Vec::new();
-        if let Some(generation) = &t.generation {
-            bits.push(generation.clone());
-        }
+        // Only the timings count as decoded. The generation string is already
+        // on the line above, and echoing it here would make a module whose
+        // timing fields were blank look like it had been read successfully.
+        let mut timings = Vec::new();
         if let Some(cas) = &t.cas_string {
-            bits.push(format!("CL{cas}"));
+            timings.push(format!("CL{cas}"));
         }
         for (label, value) in [
             ("tAA", t.tAA_ns),
@@ -389,20 +389,20 @@ pub fn system_panel(sys: &SystemInfo) -> String {
             ("tRAS", t.tRAS_ns),
         ] {
             if let Some(v) = value {
-                bits.push(format!("{label} {v} ns"));
+                timings.push(format!("{label} {v} ns"));
             }
         }
-        let _ = writeln!(
-            out,
-            "  {:<11}{}  (rated, from SPD on {})",
-            "",
-            if bits.is_empty() {
-                t.note.clone()
-            } else {
-                bits.join("  ")
-            },
-            t.device
-        );
+        if timings.is_empty() {
+            let _ = writeln!(out, "  {:<11}{}", "", t.note);
+        } else {
+            let _ = writeln!(
+                out,
+                "  {:<11}{}  (rated, from SPD on {})",
+                "",
+                timings.join("  "),
+                t.device
+            );
+        }
     }
     if let Some(note) = &mem.access_note {
         let _ = writeln!(out, "  {:<11}{note}", "");

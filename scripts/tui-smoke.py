@@ -73,20 +73,20 @@ def main() -> int:
     drain(time.time() + 2.0)
     if "measuring" not in ANSI.sub(b"", bytes(screen)).decode("utf-8", "replace").lower():
         print("note: the 'measuring' status line was not seen (fast machine?)")
-    deadline = time.time() + 40
+    # The run repaints and then goes quiet, so the screen has to be examined
+    # every pass rather than only when new bytes arrive — a finished run stops
+    # writing, and a check tied to growth never sees the last frame.
+    deadline = time.time() + 60
     seen_number = False
     while time.time() < deadline:
-        before = len(screen)
-        drain(time.time() + 1.0)
-        if len(screen) == before:
-            if child.poll() is not None:
-                break
-            continue
+        drain(time.time() + 0.5)
         text = ANSI.sub(b"", bytes(screen)).decode("utf-8", "replace")
         # A pty stream interleaves cursor moves between characters, so the
-        # digits and the unit are not always adjacent after stripping.
+        # digits and the unit are not always adjacent once the escapes are gone.
         if re.search(r"(GB/s|TB/s)", text) and re.search(r"\d", text):
             seen_number = True
+            break
+        if child.poll() is not None:
             break
     if not seen_number:
         print("FAIL: no measured figure with a unit appeared on the grid")
@@ -100,6 +100,10 @@ def main() -> int:
             break
         drain(time.time() + 0.5)
     os.write(master, b"q")
+    # Read the shutdown sequences too: leaving the alternate screen is one of
+    # them, and it is the one that decides whether the user's terminal comes
+    # back looking like their terminal.
+    drain(time.time() + 1.0)
     try:
         code = child.wait(timeout=10)
     except subprocess.TimeoutExpired:
