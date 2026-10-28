@@ -64,7 +64,27 @@ impl Runner {
     pub fn prepare(settings: Settings) -> Result<Runner> {
         let sys = sysinfo::gather();
         let kernels = Kernels::resolve(settings.isa)?;
-        let latency_cpu = sysinfo::topology::latency_core(&sys).unwrap_or(0);
+        // An explicit `--cpu` is checked rather than trusted: pinning silently
+        // fails on a cpu that does not exist, and the run then measures a
+        // different core from the one the report names.
+        let latency_cpu = match settings.latency_cpu {
+            Some(cpu) => {
+                if !sys.topology.all_cpus.contains(&cpu) {
+                    return Err(Error::NoSuchCpu {
+                        cpu,
+                        list: sys
+                            .topology
+                            .all_cpus
+                            .iter()
+                            .map(usize::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    });
+                }
+                cpu
+            }
+            None => sysinfo::topology::latency_core(&sys).unwrap_or(0),
+        };
         Ok(Runner {
             sys,
             settings,

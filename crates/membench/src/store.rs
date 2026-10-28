@@ -139,6 +139,13 @@ pub fn configuration_diff(a: &RunResults, b: &RunResults) -> Vec<String> {
     if sa.pages != sb.pages {
         out.push(format!("pages: {} vs {}", sa.pages, sb.pages));
     }
+    if sa.latency_cpu != sb.latency_cpu {
+        out.push(format!(
+            "latency cpu: {} vs {}",
+            sa.latency_cpu.map_or("auto".to_string(), |c| c.to_string()),
+            sb.latency_cpu.map_or("auto".to_string(), |c| c.to_string())
+        ));
+    }
     if sa.duration_ms != sb.duration_ms {
         out.push(format!(
             "duration per trial: {} ms vs {} ms",

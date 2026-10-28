@@ -367,6 +367,11 @@ pub struct Settings {
     pub mlock: bool,
     /// Raise scheduling priority when possible (root only).
     pub boost_priority: bool,
+    /// CPU the single-threaded cells and the sweep run on (`--cpu`). `None`
+    /// takes the first core in the detected order. On a shared machine that
+    /// default can land next to a busy SMT sibling, and no amount of care in
+    /// the kernels fixes that, so the choice has to be reachable from outside.
+    pub latency_cpu: Option<usize>,
     /// Levels and ops selected for this run.
     pub levels: Vec<Level>,
     pub ops: Vec<Op>,
@@ -388,6 +393,7 @@ impl Default for Settings {
             seed: 0x5eed_1234_9abc_def0,
             mlock: true,
             boost_priority: true,
+            latency_cpu: None,
             levels: Level::ALL.to_vec(),
             ops: vec![
                 Op::Read,

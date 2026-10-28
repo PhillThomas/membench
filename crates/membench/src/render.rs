@@ -451,6 +451,13 @@ pub fn plan_summary(settings: &Settings, sys: &SystemInfo) -> String {
         Ok(p) => p,
         Err(e) => return format!("could not size the buffers: {e}\n"),
     };
+    if let Some(cpu) = settings.latency_cpu {
+        let _ = writeln!(
+            out,
+            "  latency cells and the sweep are pinned to cpu {cpu} (--cpu); the sibling\
+             core is left alone"
+        );
+    }
     for p in &plans {
         let _ = writeln!(
             out,

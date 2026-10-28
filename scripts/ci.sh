@@ -80,10 +80,16 @@ $BIN run --no-tui --trials 2 --duration-ms 50 --level l1 --only read --json "$JS
 $BIN compare "$JSON" "$JSON2" >/dev/null
 
 step "sweep CSV"
-$BIN sweep --duration-ms 20 --trials 1 2>/dev/null | head -3 | grep -q "^size_bytes," || fail "sweep CSV header missing"
+csv=$($BIN sweep --duration-ms 20 --trials 1 2>/dev/null | head -1)
+[[ "$csv" == size_bytes,* ]] || fail "sweep CSV header missing (got: $csv)"
+echo "  $csv"
 
 step "debug build refuses to time"
-if target/debug/membench run --no-tui --level l1 --only read 2>&1 | grep -qi "debug"; then
+# Capture first, then match. Piping straight into grep under `pipefail` makes
+# the pipeline take the benchmark's deliberate exit 1, and the check fails for
+# succeeding — which is how this line first misled me.
+dbg=$(target/debug/membench run --no-tui --level l1 --only read 2>&1 || true)
+if printf '%s' "$dbg" | grep -qi "debug"; then
     echo "  refused, as it must"
 else
     fail "a debug build produced numbers"
@@ -92,12 +98,21 @@ fi
 step "TUI"
 python3 scripts/tui-smoke.py "$BIN" | tail -1
 
-if [[ -x reference/mbstream && -x reference/mblatency ]]; then
-    step "reference benchmarks"
-    echo "  reference/ is built; run scripts/compare-reference.sh for the table"
+if [[ -n "$QUICK" ]]; then
+    step "external comparison"
+    echo "  --quick: skipped (run scripts/compare-reference.sh on an idle machine)"
+elif [[ -x reference/bin/mbstream && -x reference/bin/mblatency ]]; then
+    step "external comparison against the C reference (report only)"
+    # Report, do not gate. Two microbenchmarks agreeing within 10% per cell is
+    # a statement about an idle machine, and a CI runner is not one: on this
+    # project's host the same binary moves 30% at L1 between runs, so a hard
+    # gate here would go red for reasons unrelated to the code and train
+    # everyone to ignore the red. The table prints so a human reads it.
+    BIN="$BIN" scripts/compare-reference.sh | tail -30
+    echo "  report only — see the README's \"The gate, run twice\""
 else
-    step "reference benchmarks"
-    echo "  reference/ not built (cd reference && make) — skipping the external comparison"
+    step "external comparison"
+    echo "  reference/bin/ is empty; scripts/compare-reference.sh builds it on demand"
 fi
 
 printf '\n\033[32mall machine-checkable gates passed\033[0m\n'

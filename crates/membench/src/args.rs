@@ -70,7 +70,7 @@ pub struct SweepArgs {
 }
 
 /// Flags shared by everything that measures.
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub struct Common {
     /// Worker threads. Default: one per physical core for the cache levels, all
     /// logical CPUs for Memory.
@@ -79,6 +79,13 @@ pub struct Common {
     /// Force one instruction-set path instead of the best one available.
     #[arg(long, value_name = "ISA")]
     pub isa: Option<String>,
+    /// Logical CPU for the single-threaded cells and the sweep. The default is
+    /// the first core, and on a shared machine that core's SMT sibling may be
+    /// running someone else's workload, which moves cache latency more than
+    /// anything in the code. Look for a quiet one with `mpstat -P ALL 1`; the
+    /// run records which core it used, in the JSON and in `compare`.
+    #[arg(long, value_name = "N")]
+    pub cpu: Option<usize>,
     /// Page size to request for the buffers.
     #[arg(long, value_name = "PAGES")]
     pub pages: Option<String>,
@@ -121,6 +128,9 @@ impl Common {
         }
         if let Some(raw) = &self.isa {
             s.isa = Some(raw.parse::<Isa>().map_err(|e| format!("--isa: {e}"))?);
+        }
+        if let Some(n) = self.cpu {
+            s.latency_cpu = Some(n);
         }
         if let Some(raw) = &self.pages {
             s.pages = raw
@@ -185,6 +195,7 @@ mod tests {
         let c = Common {
             threads: Some(4),
             isa: Some("avx2".into()),
+            cpu: Some(3),
             pages: Some("4k".into()),
             trials: Some(3),
             duration_ms: Some(50),
@@ -193,11 +204,12 @@ mod tests {
             copy_counts_both: true,
             write_hint: Some("normal".into()),
             seed: Some(7),
-            dry_run: false,
+            ..Common::default()
         };
         let s = c.settings().expect("valid");
         assert_eq!(s.threads, Some(4));
         assert_eq!(s.isa, Some(Isa::Avx2));
+        assert_eq!(s.latency_cpu, Some(3));
         assert_eq!(s.pages, PageKind::FourK);
         assert_eq!(s.trials, 3);
         assert_eq!(s.duration_ms, 50);
@@ -232,19 +244,7 @@ mod tests {
     }
 
     fn default_common() -> Common {
-        Common {
-            threads: None,
-            isa: None,
-            pages: None,
-            trials: None,
-            duration_ms: None,
-            only: None,
-            level: None,
-            copy_counts_both: false,
-            write_hint: None,
-            seed: None,
-            dry_run: false,
-        }
+        Common::default()
     }
 
     #[test]

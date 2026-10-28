@@ -50,6 +50,12 @@ pub enum Error {
 
     #[error("not supported on this platform: {0}")]
     Unsupported(&'static str),
+
+    /// `--cpu` named a CPU this machine does not have. Listed rather than
+    /// refused silently: on a pinned benchmark, running somewhere other than
+    /// the requested core is the one mistake that cannot be spotted afterwards.
+    #[error("cpu {cpu} is not a logical cpu of this machine (available: {list})")]
+    NoSuchCpu { cpu: usize, list: String },
 }
 
 /// `Error` is used across thread boundaries, so it must not carry anything

@@ -592,21 +592,12 @@ fn self_test() -> Result<ExitCode> {
 }
 
 impl Common {
-    /// Every flag left at its default, for the bare `membench` command.
+    /// Every flag left at its default, for the bare `membench` command. This
+    /// is `Default` rather than a written-out literal because the last flag
+    /// added here had to be added in two more places, and one of them was a
+    /// test that only failed at runtime.
     fn none() -> Common {
-        Common {
-            threads: None,
-            isa: None,
-            pages: None,
-            trials: None,
-            duration_ms: None,
-            only: None,
-            level: None,
-            copy_counts_both: false,
-            write_hint: None,
-            seed: None,
-            dry_run: false,
-        }
+        Common::default()
     }
 }
 
