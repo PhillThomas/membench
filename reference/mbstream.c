@@ -475,6 +475,25 @@ static double measure_mhz(double target_ms)
     return (double)n / dt / 1e6;
 }
 
+
+/*
+ * Two samples, faster one kept.  Contamination is one-directional: being
+ * preempted, or sharing the core with a busy SMT sibling, can only make the
+ * chain look slower than the core really was, never faster.  So the larger
+ * sample is the closer estimate, and the smaller one is thrown away rather than
+ * averaged in.
+ */
+static double measure_mhz_best(double target_ms, int samples)
+{
+    double best = 0.0;
+    for (int i = 0; i < samples; i++) {
+        double m = measure_mhz(target_ms);
+        if (m > best)
+            best = m;
+    }
+    return best;
+}
+
 /* Plausibility, in the plan's spirit: say so when a number cannot be true. */
 static const char *clock_sanity(double mhz)
 {
@@ -866,7 +885,7 @@ static void *worker(void *arg)
 
     /* Same core, same thermal moment as the trials (membench measures here for
      * exactly the same reason): the number below is what the core ran at. */
-    t->clock_mhz = measure_mhz(20.0);
+    t->clock_mhz = measure_mhz_best(15.0, 2);
 
     t->src_len = t->src.len;
     t->dst_len = (t->op == OP_COPY) ? t->dst.len : 0;
@@ -894,10 +913,11 @@ typedef struct {
     double clock_min, clock_max;
     double thread_min, thread_max; /* per-thread medians: the straggler show */
     int cpus[MAX_THREADS];
+    char note[256];   /* what this cell could not have been, if anything */
 } Cell;
 
-static void run_op(const Opt *o, const int *cpus, int nthreads, size_t bytes_per_thread,
-                   Op op, Cell *cell)
+static void run_op(const Opt *o, const Machine *m, const int *cpus, int nthreads,
+                   size_t bytes_per_thread, Op op, Cell *cell)
 {
     pthread_barrier_t bar_warm, bar_trial;
     Thread *th;
@@ -908,6 +928,46 @@ static void run_op(const Opt *o, const int *cpus, int nthreads, size_t bytes_per
     memset(cell, 0, sizeof(*cell));
     cell->op = op;
     cell->huge_bytes = 0;
+
+    /* Rule: say so when the buffer does not fit the level it is meant to
+     * measure.  Copy is the case that bites: it touches two buffers, so the
+     * footprint is 2 x the plan's per-thread share, and at L3 that alone
+     * exceeds the whole cache. */
+    {
+        double footprint = (double)bytes_per_thread * (double)nthreads *
+                           (op == OP_COPY ? 2.0 : 1.0);
+        long long target = o->level == L1D ? m->l1d * (o->level == L1D ? nthreads : 1)
+                         : o->level == L2 ? m->l2 * nthreads
+                         : o->level == L3 ? m->l3
+                         : 0;
+        if (o->level == L1D)
+            target = m->l1d * nthreads; /* L1d is per core: compare per core below */
+        if (o->level == L1D && (double)bytes_per_thread * (op == OP_COPY ? 2.0 : 1.0)
+                > (double)m->l1d)
+            snprintf(cell->note, sizeof(cell->note),
+                     "the per-core footprint of this op is %s, which is more than the %s L1d: "
+                     "expect L2 traffic in a cell labelled L1d",
+                     human_bytes((unsigned long long)(bytes_per_thread * (op == OP_COPY ? 2 : 1))),
+                     human_bytes((unsigned long long)m->l1d));
+        else if (o->level == L2 && (double)bytes_per_thread * (op == OP_COPY ? 2.0 : 1.0)
+                 > (double)m->l2)
+            snprintf(cell->note, sizeof(cell->note),
+                     "the per-core footprint of this op is %s, more than the %s L2",
+                     human_bytes((unsigned long long)(bytes_per_thread * (op == OP_COPY ? 2 : 1))),
+                     human_bytes((unsigned long long)m->l2));
+        else if (o->level == L3 && footprint > (double)m->l3)
+            snprintf(cell->note, sizeof(cell->note),
+                     "%s of buffers together exceed the %s L3, so this cell is part memory "
+                     "traffic%s",
+                     human_bytes((unsigned long long)footprint),
+                     human_bytes((unsigned long long)m->l3),
+                     op == OP_COPY ? " (copy touches two buffers)" : "");
+        else if (o->level == MEM)
+            snprintf(cell->note, sizeof(cell->note),
+                     "%s%s touched per pass", human_bytes((unsigned long long)footprint),
+                     op == OP_COPY ? " (source + destination)" : "");
+        (void)target;
+    }
 
     th = calloc((size_t)nthreads, sizeof(Thread));
     tid = calloc((size_t)nthreads, sizeof(pthread_t));
@@ -1057,8 +1117,12 @@ static void run_op(const Opt *o, const int *cpus, int nthreads, size_t bytes_per
                     cmax = th[i].clock_mhz;
             }
         }
-        cell->thread_min = worst > 1e29 ? 0.0 : worst;
-        cell->thread_max = best < 1e29 ? 0.0 : best;
+        /* The sentinels are the other way round from the values: `worst` only
+         * counts if something actually moved it off 1e30, `best` only if it
+         * moved off -1.  Getting this backwards silently reported a fastest
+         * thread of 0.0 GB/s. */
+        cell->thread_min = worst < 1e29 ? worst : 0.0;
+        cell->thread_max = best > 0.0 ? best : 0.0;
         cell->clock_min = cmin < 1e29 ? cmin : 0.0;
         cell->clock_max = cmax;
         for (i = 0; i < nthreads && i < MAX_THREADS; i++)
@@ -1296,7 +1360,14 @@ static void write_json(const char *path, const Opt *o, const Machine *m, const P
         else
             fprintf(f, "      \"huge_pages_bytes\": %lld,\n", c->huge_bytes);
         fprintf(f, "      \"huge_mapped_bytes\": %llu,\n", c->mapped_bytes);
-        fprintf(f, "      \"madvise_hugepage_errno\": %d\n", c->madvise_errno);
+        fprintf(f, "      \"madvise_hugepage_errno\": %d,\n", c->madvise_errno);
+        fprintf(f, "      \"clock_mhz_min\": %.1f,\n", c->clock_min);
+        fprintf(f, "      \"clock_mhz_max\": %.1f,\n", c->clock_max);
+        fprintf(f, "      \"thread_gbps_min\": %.6f,\n", c->thread_min);
+        fprintf(f, "      \"thread_gbps_max\": %.6f%s\n", c->thread_max,
+                c->note[0] ? "," : "");
+        if (c->note[0])
+            fprintf(f, "      \"note\": \"%s\"\n", c->note);
         fputs(i == 2 ? "    }\n" : "    },\n", f);
     }
     fputs("  ]\n}\n", f);
@@ -1425,7 +1496,8 @@ int main(int argc, char **argv)
 
     for (int i = 0; i < 3; i++) {
         memset(&cells[i], 0, sizeof(cells[i]));
-        run_op(&o, plan.cpus, plan.threads, plan.bytes_per_thread, ops[i], &cells[i]);
+        run_op(&o, &m, plan.cpus, plan.threads, plan.bytes_per_thread, ops[i],
+                 &cells[i]);
     }
 
     printf("\n%-6s %12s %12s %8s %8s %14s\n",
@@ -1435,19 +1507,25 @@ int main(int argc, char **argv)
         printf("%-6s %12.3f %12.3f %7.1f%% %8d %8.0f-%-5.0f\n",
                op_name(c->op), c->median, c->best, c->spread_pct, c->ntrial,
                c->clock_min, c->clock_max);
-        if (c->clock_max > 0.0) {
+        printf("       clock %.0f-%.0f MHz (dependent add chain, measured on the workers at"
+               " the end\n"
+               "       of the cell while the other workers still ran, so an SMT-shared core\n"
+               "       reads low); per-thread %.1f-%.1f GB/s\n",
+               c->clock_min, c->clock_max, c->thread_min, c->thread_max);
+        {
             const char *bad = clock_sanity(c->clock_min);
-            printf("       effective clock during the cell: %.0f-%.0f MHz, measured with a\n"
-                   "       dependent add chain on the worker cores, not read from cpufreq\n",
-                   c->clock_min, c->clock_max);
             if (bad)
                 printf("       WARNING: %s (%.0f MHz)\n", bad, c->clock_min);
+            if (c->thread_max > 0.0 && c->thread_min < c->thread_max * 0.75)
+                printf("       WARNING: threads were far from equal (slowest %.1f of fastest"
+                       " %.1f GB/s):\n"
+                       "       the window runs earliest-start to latest-end, so the busiest"
+                       " core\n"
+                       "       sets the pace of the whole cell. Other work was on this host"
+                       ".\n", c->thread_min, c->thread_max);
+            if (c->note[0])
+                printf("       note: %s\n", c->note);
         }
-        if (c->thread_max > 0.0 && c->thread_min < c->thread_max * 0.9)
-            printf("       threads were not equal: fastest %.1f GB/s, slowest %.1f GB/s -- the\n"
-                   "       cell is aggregated earliest-start to latest-end, so one busy core\n"
-                   "       holds back the whole window (cpus are listed above)\n",
-                   c->thread_max, c->thread_min);
     }
 
     printf("\nper-trial GB/s\n");

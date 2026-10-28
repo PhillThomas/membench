@@ -31,4 +31,4 @@ flamegraph.svg
 /reference/mblatency
 /reference/*.o
 /reference/bin/
-/reference/out/
+/reference/out*/

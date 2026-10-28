@@ -420,17 +420,37 @@ fn aggregate(job: &Job, outcomes: &[Outcome]) -> CellResult {
         .fold(None::<f64>, |acc, m| Some(acc.unwrap_or(m).max(m)));
 
     let mut notes: Vec<String> = Vec::new();
+    let buffers: usize = if job.work.needs_two_buffers() { 2 } else { 1 };
+    // The footprint is what the caches see, so a copy has to count both buffers
+    // or the note describes half the working set — and an L3 copy then looks
+    // cache-resident when it plainly is not.
+    let footprint = plan
+        .bytes_per_thread
+        .saturating_mul(plan.threads)
+        .saturating_mul(buffers);
     notes.push(format!(
-        "buffer: {} per thread × {} thread(s), {} in total",
+        "buffer: {} per thread × {} thread(s){}, {} in total",
         crate::sysinfo::human_bytes(plan.bytes_per_thread as u64),
         plan.threads,
-        crate::sysinfo::human_bytes(plan.bytes_per_thread.saturating_mul(plan.threads) as u64)
+        if buffers == 2 { " × 2 buffers" } else { "" },
+        crate::sysinfo::human_bytes(footprint as u64)
     ));
     notes.push(format!("sizing: {}", plan.derivation));
     if let Some(n) = &plan.note {
         notes.push(format!("sizing note: {n}"));
     }
-    if job.work.needs_two_buffers() {
+    if buffers == 2 {
+        if let Some(cache) = plan.cache_bytes {
+            if footprint > cache {
+                notes.push(format!(
+                    "the two buffers together are {}, which is more than the {} being measured: \
+                     this cell is part {} traffic, not a pure cache result",
+                    crate::sysinfo::human_bytes(footprint as u64),
+                    crate::sysinfo::human_bytes(cache),
+                    plan.level.short(),
+                ));
+            }
+        }
         notes.push(format!(
             "copy counted as {} bytes per iteration ({})",
             if job.settings.copy_counts_both {
@@ -439,9 +459,9 @@ fn aggregate(job: &Job, outcomes: &[Outcome]) -> CellResult {
                 "source only"
             },
             if job.settings.copy_counts_both {
-                "--copy-counts-both"
+                "--copy-counts-both, the STREAM convention"
             } else {
-                "default; use --copy-counts-both for AIDA-style counting"
+                "default, the AIDA convention; --copy-counts-both counts both sides"
             }
         ));
     }
