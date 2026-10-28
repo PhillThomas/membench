@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # One job, running the same script a developer runs. Keeping the logic in
+  # scripts/ci.sh means a green badge and a green laptop mean the same thing.
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Everything short of measuring: formatting, lints, tests and the
+      # assembly gate. The runner is a shared VM, so its numbers are not worth
+      # asserting on; the steps that touch the machine are marked below.
+      - name: gates
+        run: ./scripts/ci.sh --quick
+
+  measure:
+    # A real run, so a regression that only shows up when kernels execute is
+    # caught. Not a performance gate: cloud CPU steals time and the spread
+    # alone would fail the build for reasons that have nothing to do with the
+    # code.
+    runs-on: ubuntu-24.04
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build and self-test
+        run: |
+          cargo build --release
+          ./target/release/membench self-test
+      - name: one cell, written to JSON
+        run: |
+          ./target/release/membench run --no-tui --trials 2 --duration-ms 100 \
+              --level l1,l2,l3,memory --only read --json ci.json
+          python3 - ci.json <<'PY'
+          import json, math, sys
+          doc = json.load(open(sys.argv[1]))
+          assert doc["schema_version"] == 1
+          assert doc["cells"], "no cells measured"
+          for c in doc["cells"]:
+              assert math.isfinite(c["value"]) and c["value"] > 0, c
+          print(f"{len(doc['cells'])} cells measured on the runner")
+          PY
+      - name: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-run
+          path: ci.json
