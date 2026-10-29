@@ -1,8 +1,10 @@
 # Maintainer: Phill Thomas <phill@phillthomas.co.uk>
 #
-# Built from the private Gogs checkout over SSH, which is how this project is
-# distributed: `makepkg -si` in this directory clones the repo with your own
-# key. Building from a working copy instead (the usual case while developing):
+# `makepkg -si` in this directory clones the public GitHub repository over
+# HTTPS, so no key of yours is involved and anyone can build the package. Until
+# that repository is public the clone fails with a prompt for credentials, and
+# the working copy is the way to build (which is the usual case while
+# developing anyway):
 #
 #   cargo build --release && pkgver=$(./target/release/membench --version | awk '{print $2}')
 #
@@ -17,12 +19,12 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc='AIDA64-style cache and memory benchmark for the Linux terminal'
 arch=('x86_64' 'aarch64')
-url='http://example.invalid:3000/phillthomas/membench'
+url='https://github.com/PhillThomas/membench'
 license=('MIT')
 makedepends=('rust' 'cargo')
 depends=('glibc')
 optdepends=('python3: for scripts/tui-smoke.py and the reference comparison')
-source=('membench::git+ssh://user@example.invalid:22/phillthomas/membench.git#branch=main')
+source=('membench::git+https://github.com/PhillThomas/membench.git#branch=main')
 sha256sums=('SKIP')
 
 pkgver() {

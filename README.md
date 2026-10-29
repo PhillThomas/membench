@@ -56,12 +56,12 @@ cargo build --release          # never --debug; see above
 On Arch (including Omarchy), to install it as a package:
 
 ```sh
-cd packaging && makepkg -si    # clones main from Gogs over SSH, with your key
+cd packaging && makepkg -si    # clones the public GitHub repository over HTTPS
 ```
 
-That path clones `main` from the remote and ignores any working copy, so for a
-change you are trying out before it is pushed, build the tree you are in with
-`cargo` and run `./target/release/membench` directly. `makepkg -p` names a
+That path clones `main` from GitHub over HTTPS and ignores any working copy, so
+for a change you are trying out before it is pushed, build the tree you are in
+with `cargo` and run `./target/release/membench` directly. `makepkg -p` names a
 different PKGBUILD but only one in the current directory, and `--config` is for
 `makepkg.conf`, not the PKGBUILD.
 
