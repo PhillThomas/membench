@@ -32,3 +32,10 @@ flamegraph.svg
 /reference/*.o
 /reference/bin/
 /reference/out*/
+
+# Python bytecode from the comparison script, and the reference build trees.
+# Neither is source, both reappear the moment anyone runs a build.
+__pycache__/
+*.pyc
+reference/bin/
+reference/out*/
