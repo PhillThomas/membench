@@ -394,8 +394,17 @@ EEPROMs behind the `ee1004`/`spd5118` drivers give the module's *rated* figures
 — speed bin, AA-RCD-RP-RAS cycle set, tAA/tRCD/tRP/tRAS minima, the range of
 supported CAS latencies — always labelled rated, because the values a controller
 is actually running live in memory-controller registers that no interface
-standardises. SMBIOS type 17 gives the population: which sockets hold
-modules, their size, part number and manufacturer.
+standardises. It also carries the module's own part number, in the vendor block
+at bytes 329..348, which is how `info` can name the kit on a machine where
+SMBIOS cannot be read at all.
+SMBIOS type 17 gives the population — which sockets hold modules, their size,
+rated and running speed, part number and manufacturer — and `info` prints one
+row per populated socket. Two caveats belong to that source rather than to the
+decoder: plenty of firmware leaves the manufacturer string at the literal
+`Unknown`, which is a placeholder and so is not printed, and the SPD's own
+module and DRAM manufacturer fields hold JEDEC JEP106 *codes*, not names —
+resolving those needs a vendor table this project does not ship yet, so the
+name is shown only where a source actually spells it out.
 
 Neither is easy to get right, and both were wrong in 0.1.0 in ways that only
 real hardware exposes: the DDR4 decoder looked for its key byte at SPD offset 1

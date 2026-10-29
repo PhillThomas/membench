@@ -381,6 +381,61 @@ pub fn system_panel(sys: &SystemInfo) -> String {
         memline.push_str(&format!("  {note}"));
     }
     let _ = writeln!(out, "  {:<11}{memline}", "Memory");
+
+    // One line per populated socket, so the panel answers "what is actually in
+    // this machine" — size, type, speed and the module's own part number —
+    // instead of only the total. The strings are SMBIOS's, trimmed; nothing
+    // here is looked up in a product database.
+    let sources: Vec<&str> = mem.modules.iter().map(|d| d.source.as_str()).collect();
+    // Usually every row came from the same table, so it is stated once instead
+    // of on every line; the JSON repeats it per row because a row can be moved
+    // out of context there.
+    let shared_source = sources
+        .first()
+        .copied()
+        .filter(|first| sources.iter().all(|s| s == first));
+    for (i, d) in mem.modules.iter().enumerate() {
+        let mut f = Vec::new();
+        if let Some(sz) = d.size_bytes {
+            f.push(human_bytes(sz));
+        }
+        if let Some(kind) = &d.device_type {
+            f.push(kind.clone());
+        }
+        match (d.max_speed_mts, d.configured_speed_mts) {
+            // Rated and running speed differ whenever the machine is not
+            // running the modules at their rated bin; both are worth seeing.
+            (Some(max), Some(cfg)) if cfg != max => f.push(format!("{max} MT/s, running {cfg}")),
+            (Some(max), _) => f.push(format!("{max} MT/s")),
+            (None, Some(cfg)) => f.push(format!("running {cfg} MT/s")),
+            (None, None) => {}
+        }
+        if let Some(part) = &d.part_number {
+            f.push(part.clone());
+        }
+        if let Some(mfr) = &d.manufacturer {
+            // Several board makers leave the manufacturer string at the literal
+            // "Unknown", which is firmware for "I have no string" rather than a
+            // vendor name. Repeating it adds nothing; the JSON keeps it.
+            if !mfr.is_empty() && !mfr.eq_ignore_ascii_case("unknown") {
+                f.push(format!("by {mfr}"));
+            }
+        }
+        let slot = d.slot.as_deref().unwrap_or("socket");
+        let place = match &d.bank {
+            Some(bank) if !bank.is_empty() && !bank.eq_ignore_ascii_case("unknown") => {
+                format!("{slot} @ {bank}")
+            }
+            _ => slot.to_string(),
+        };
+        let tail = match shared_source {
+            Some(src) if i == 0 => format!("  (from {src})"),
+            None => format!("  (from {})", d.source),
+            Some(_) => String::new(),
+        };
+        let _ = writeln!(out, "  {:<11}{}  {}{tail}", "", place, f.join("  "));
+    }
+
     // SPD timings are the module's rated values, never its running values, and
     // the panel says so next to the device that was read.
     for t in &mem.spd {
@@ -390,6 +445,11 @@ pub fn system_panel(sys: &SystemInfo) -> String {
         // Rated speed first: it is the figure on the module's label, and the
         // one that survives even when the timing fields are blank.
         let mut rated = Vec::new();
+        // The module's own label, straight from its SPD vendor block: this is
+        // the line that identifies the kit even where SMBIOS cannot be read.
+        if let Some(part) = &t.part_number {
+            rated.push(part.clone());
+        }
         if let Some(mts) = t.max_mts {
             rated.push(format!("{mts} MT/s"));
         }
@@ -611,7 +671,9 @@ pub fn compare_table(rows: &[crate::store::Diff]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use membench_core::result::{Level, Op, RunResults, Settings, SystemInfo};
+    use membench_core::result::{
+        Dimm, Level, MemoryInfo, Op, RunResults, Settings, SpdTimings, SystemInfo,
+    };
 
     fn cell(level: Level, op: Op, value: f64) -> CellResult {
         let mut c = CellResult::new(level, op, value, op.unit().to_string());
@@ -674,6 +736,63 @@ mod tests {
         }
         // Unknown is spelled out rather than left empty (rule 11).
         assert!(text.contains("Unknown"), "{text}");
+    }
+
+    #[test]
+    fn the_panel_shows_which_modules_are_in_the_machine() {
+        // The reporter's kit as his board reports it, placeholder strings and
+        // all: the question was whether the panel can say what the memory
+        // actually is, not whether it can print a tidy machine.
+        let sys = SystemInfo {
+            memory: MemoryInfo {
+                total_bytes: Some(32 << 30),
+                mem_type: Some("DDR4".into()),
+                mem_type_source: Some("SPD driver binding".into()),
+                populated_modules: Some(2),
+                channels_note: Some("2 module(s) populated".into()),
+                modules: vec![
+                    Dimm {
+                        slot: Some("DIMM 0".into()),
+                        bank: Some("P0 CHANNEL A".into()),
+                        size_bytes: Some(16 << 30),
+                        device_type: Some("DDR4 (unbuffered)".into()),
+                        max_speed_mts: Some(2133),
+                        configured_speed_mts: Some(1866),
+                        part_number: Some("CMK32GX4M2A2133C13".into()),
+                        // His firmware's literal answer for "no string".
+                        manufacturer: Some("Unknown".into()),
+                        source: "SMBIOS type 17".into(),
+                        ..Default::default()
+                    },
+                    Dimm {
+                        slot: Some("DIMM 0".into()),
+                        bank: Some("P0 CHANNEL B".into()),
+                        size_bytes: Some(16 << 30),
+                        part_number: Some("CMK32GX4M2A2133C13".into()),
+                        manufacturer: Some("Corsair".into()),
+                        source: "SMBIOS type 17".into(),
+                        ..Default::default()
+                    },
+                ],
+                spd: vec![SpdTimings {
+                    device: "SPD EEPROM 5-0050 (DDR4)".into(),
+                    part_number: Some("CMK32GX4M2A2133C13".into()),
+                    max_mts: Some(2133),
+                    cycles: Some("15-15-15-36".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let text = system_panel(&sys);
+        assert!(text.contains("DIMM 0 @ P0 CHANNEL A"), "{text}");
+        assert!(text.contains("CMK32GX4M2A2133C13"), "{text}");
+        assert!(text.contains("2133 MT/s, running 1866"), "{text}");
+        assert!(text.contains("by Corsair"), "{text}");
+        assert!(!text.contains("by Unknown"), "placeholder leaked:\n{text}");
+        // The source is stated once for a list that shares it, not per row.
+        assert_eq!(text.matches("(from SMBIOS type 17)").count(), 1, "{text}");
     }
 
     #[test]

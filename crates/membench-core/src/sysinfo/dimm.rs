@@ -520,6 +520,14 @@ fn decode_spd(generation: &str, device: &str, b: &[u8]) -> SpdTimings {
         .map(|m| format!("{m} module, "))
         .unwrap_or_default();
 
+    // The module's own part number, from the vendor block at bytes 329..348
+    // (JESD403-5). SMBIOS usually carries the same string, but SPD is worth
+    // reading anyway: it reaches places SMBIOS cannot — a container, for one —
+    // and it describes the module rather than the socket. These are the
+    // reporter's bytes: they read "CMK32GX4M2A2133C13", what `decode-dimms`
+    // prints for the same EEPROM.
+    t.part_number = spd_part_number(b);
+
     // Time bases. There is exactly one valid combination in DDR4, so anything
     // else means the table is not what the layout claims.
     if (b[17] & 0x03) != 0 || (b[17] & 0xC0) != 0 {
@@ -659,6 +667,22 @@ const FTB_NS: f64 = 0.001;
 /// `decode-dimms` follows: 12 = DDR4 SDRAM, 14 = DDR4E SDRAM.
 const SPD_DDR4: u8 = 12;
 const SPD_DDR4E: u8 = 14;
+
+/// The part number from the SPD vendor block: printable ASCII, ended by the
+/// first byte that is not. The field is written that way rather than padded by
+/// rule, so a module that left it blank reads as nothing, not as spaces.
+fn spd_part_number(b: &[u8]) -> Option<String> {
+    if b.len() < 349 {
+        return None;
+    }
+    let text: String = b[329..349]
+        .iter()
+        .map(|&c| char::from(c))
+        .take_while(|c| c.is_ascii_graphic() || *c == ' ')
+        .collect();
+    let text = text.trim_end().to_string();
+    (!text.is_empty()).then_some(text)
+}
 
 /// Names for the SPD byte-2 memory-type codes, used to say *what* was found
 /// rather than only that it disagreed.
@@ -897,6 +921,15 @@ mod tests {
         b[125] = 0xc2; // tCKAVGmin fine time: -62 ps, signed
         b[126] = 0x7d; // block 0 CRC, low byte
         b[127] = 0x54;
+        // The vendor block, also as read: module JEDEC code 0x02/0x9E, which
+        // `decode-dimms` resolves to Corsair, DRAM code 0x80/0x2C for Micron,
+        // and the part number. The date, location and revision bytes are
+        // unwritten on these modules, which the decoder has to live with.
+        b[320] = 0x02;
+        b[321] = 0x9e;
+        b[329..349].copy_from_slice(b"CMK32GX4M2A2133C13  ");
+        b[350] = 0x80;
+        b[351] = 0x2c;
         b
     }
 
@@ -912,6 +945,25 @@ mod tests {
         assert!(t.note.contains("UDIMM"), "{}", t.note);
         assert!(t.note.contains("up to CL16"), "{}", t.note);
         assert!(t.note.contains("not the values"), "{}", t.note);
+    }
+
+    #[test]
+    fn the_reporters_module_names_itself() {
+        // Model straight off the EEPROM, no SMBIOS involved: the string SMBIOS
+        // carries for these modules, minus its two trailing spaces.
+        let t = decode_spd("DDR4", "5-0050", &reporters_modules());
+        assert_eq!(t.part_number.as_deref(), Some("CMK32GX4M2A2133C13"));
+    }
+
+    #[test]
+    fn a_part_number_field_left_blank_is_not_an_empty_string() {
+        let mut b = reporters_modules();
+        b[329..349].fill(0);
+        assert_eq!(decode_spd("DDR4", "5-0050", &b).part_number, None);
+        // A read that stops before the vendor block says nothing rather than
+        // guessing at a label.
+        let short = &reporters_modules()[..256];
+        assert_eq!(decode_spd("DDR4", "5-0050", short).part_number, None);
     }
 
     #[test]

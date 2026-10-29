@@ -658,6 +658,9 @@ pub struct SpdTimings {
     pub tRAS_ns: Option<f32>,
     /// Rated speed from tCKAVGmin in MT/s: the number on the module's label.
     pub max_mts: Option<u32>,
+    /// Module part number as written in the SPD vendor block (bytes 329..348
+    /// for DDR4). Additive in schema 2: an older document simply lacks it.
+    pub part_number: Option<String>,
     pub generation: Option<String>,
     pub device: String,
     pub note: String,
