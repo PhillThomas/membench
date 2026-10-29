@@ -34,6 +34,15 @@ fn dash() -> String {
 }
 
 /// The AIDA-shaped grid. Rows in grid order, one figure per column.
+/// SPD timings to at most two decimals with trailing zeros trimmed: a module
+/// rated 13.75 ns and one rated 33 ns should not both print as "33.00".
+fn fmt_ns(v: f32) -> String {
+    format!("{v:.2}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+}
+
 pub fn grid(results: &RunResults) -> String {
     let columns = [Column::Read, Column::Write, Column::Copy, Column::Latency];
     let levels = results.grid_row_levels();
@@ -378,30 +387,43 @@ pub fn system_panel(sys: &SystemInfo) -> String {
         // Only the timings count as decoded. The generation string is already
         // on the line above, and echoing it here would make a module whose
         // timing fields were blank look like it had been read successfully.
-        let mut timings = Vec::new();
-        if let Some(cas) = &t.cas_string {
-            timings.push(format!("CL{cas}"));
+        // Rated speed first: it is the figure on the module's label, and the
+        // one that survives even when the timing fields are blank.
+        let mut rated = Vec::new();
+        if let Some(mts) = t.max_mts {
+            rated.push(format!("{mts} MT/s"));
         }
-        for (label, value) in [
+        if let Some(cycles) = &t.cycles {
+            // Not "CL": this is the AA/RCD/RP/RAS set at tCKAVGmin. The CAS
+            // number the controller picks from the module's supported set is a
+            // different thing, and the note names that set.
+            rated.push(format!("AA-RCD-RP-RAS {cycles} cycles"));
+        }
+        let timings = [
             ("tAA", t.tAA_ns),
             ("tRCD", t.tRCD_ns),
             ("tRP", t.tRP_ns),
             ("tRAS", t.tRAS_ns),
-        ] {
-            if let Some(v) = value {
-                timings.push(format!("{label} {v} ns"));
-            }
+        ]
+        .into_iter()
+        .filter_map(|(label, v)| v.map(|v| format!("{label} {} ns", fmt_ns(v))))
+        .collect::<Vec<_>>();
+
+        let mut lines = Vec::new();
+        if !rated.is_empty() {
+            lines.push(rated.join("  "));
         }
-        if timings.is_empty() {
+        if !timings.is_empty() {
+            lines.push(timings.join("  "));
+        }
+        if lines.is_empty() {
             let _ = writeln!(out, "  {:<11}{}", "", t.note);
         } else {
-            let _ = writeln!(
-                out,
-                "  {:<11}{}  (rated, from SPD on {})",
-                "",
-                timings.join("  "),
-                t.device
-            );
+            let tag = format!("(rated, from SPD on {})", t.device);
+            let _ = writeln!(out, "  {:<11}{}  {tag}", "", lines[0]);
+            for line in &lines[1..] {
+                let _ = writeln!(out, "  {:<11}{line}", "");
+            }
         }
     }
     if let Some(note) = &mem.access_note {

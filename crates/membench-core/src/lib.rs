@@ -50,7 +50,10 @@ pub use runner::{run_once, Event, Runner};
 
 /// The version of the JSON document schema (PLAN.md: "JSON carries a schema
 /// version … so two runs can always be compared").
-pub const SCHEMA_VERSION: u32 = 1;
+/// Bumped to 2 with the SPD fixes: the timing fields became sub-nanosecond
+/// floats and `cas_string` — which never held a CAS rating — became `cycles`.
+/// A v1 document is refused by name rather than silently misread.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Refuse to time anything from an unoptimised build (PLAN.md rule 2: a debug
 /// build inlines nothing and the numbers are meaningless).

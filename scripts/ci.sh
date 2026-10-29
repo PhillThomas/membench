@@ -58,10 +58,14 @@ JSON=$(mktemp --suffix=.json)
 trap 'rm -f "$JSON"' EXIT
 $BIN run --no-tui --trials 2 --duration-ms 50 --level l1,l2 --only read,latency \
     --json "$JSON" 2>/dev/null >/dev/null
-python3 - "$JSON" <<'PY' || fail "the JSON document is not what the contract says"
+# The expected version comes from the crate, not from this script, so the
+# check cannot quietly fall behind a deliberate bump.
+SCHEMA=$(sed -n 's/^pub const SCHEMA_VERSION: u32 = \(.*\);$/\1/p' \
+    crates/membench-core/src/lib.rs)
+python3 - "$JSON" "$SCHEMA" <<'PY' || fail "the JSON document is not what the contract says"
 import json, math, sys
 doc = json.load(open(sys.argv[1]))
-assert doc["schema_version"] == 1, doc["schema_version"]
+assert doc["schema_version"] == int(sys.argv[2]), (doc["schema_version"], sys.argv[2])
 assert doc["cells"], "no cells were measured"
 for c in doc["cells"]:
     assert math.isfinite(c["value"]) and c["value"] > 0, c

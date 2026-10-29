@@ -174,9 +174,12 @@ def read_membench(path: str, metric: str) -> dict:
     if not isinstance(doc, dict) or "cells" not in doc:
         die(4, f"{path} has no \"cells\" array, so it is not a membench run export")
 
-    if doc.get("schema_version") != 1:
+    # Schema 2 (issue #1 fixes) made the SPD timings floats and renamed
+    # cas_string to cycles; neither is read here, but a note that names a stale
+    # version is noise that teaches everyone to ignore notes.
+    if doc.get("schema_version") != 2:
         print(f"compare.py: NOTE: membench schema_version is "
-              f"{doc.get('schema_version')!r}, this script expects 1", file=sys.stderr)
+              f"{doc.get('schema_version')!r}, this script expects 2", file=sys.stderr)
 
     for cell in doc.get("cells", []):
         if not isinstance(cell, dict):

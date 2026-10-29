@@ -94,9 +94,38 @@ struct SmbiosRecord {
 /// Walk the raw SMBIOS area. Every record is `type, length, handle(2)` followed
 /// by `length - 4` more bytes and then a NUL-terminated string area ending in an
 /// extra NUL.
+/// Where the structures begin inside the DMI blob.
+///
+/// Two firmwares differ here, which is only visible on real machines. When the
+/// blob carries an entry point — a 64-bit `_SM3_` one, then the 32-bit `_SM_`
+/// one, per DSP0134 5.1 — the structures start after them. But the kernel's
+/// `/sys/firmware/dmi/tables/DMI` file is the *structure area only*: the entry
+/// point lives in a separate `smbios_entry_point` file, and `DMI` starts
+/// straight at structure 0 (on the reporter's board: `00 1a 00 00 …`, type 0 of
+/// 0x1A bytes). So an anchor is skipped when present and not demanded when
+/// absent — insisting on one would have broken a table that parses fine.
+fn structures_start(blob: &[u8]) -> usize {
+    let mut off = 0usize;
+    if blob.len() >= 7 && blob[0..5] == *b"_SM3_" {
+        let len = blob[6] as usize; // Entry Point Length, 0x18 for the 64-bit EPS
+        if len >= 5 && len <= blob.len() {
+            off = len;
+        }
+    }
+    if blob.len() >= off + 6 && blob[off..off + 4] == *b"_SM_" {
+        // Entry Point Length, normally 0x1F; SMBIOS 2.1 firmware shipped both
+        // 0x1E and 0x1F, which is why the spec calls it out.
+        let len = blob[off + 5] as usize;
+        if len >= 4 && off + len <= blob.len() {
+            off += len;
+        }
+    }
+    off
+}
+
 fn smbios_records(blob: &[u8]) -> Vec<SmbiosRecord> {
     let mut out = Vec::new();
-    let mut i = 0usize;
+    let mut i = structures_start(blob);
     while i + 4 <= blob.len() {
         let ty = blob[i];
         let length = blob[i + 1] as usize;
@@ -105,19 +134,27 @@ fn smbios_records(blob: &[u8]) -> Vec<SmbiosRecord> {
         }
         let mut strings = Vec::new();
         let mut p = i + length;
-        while p < blob.len() {
+        // The unformatted area is a run of NUL-terminated strings closed by a
+        // *double* NUL, and a record with no strings is nothing but that double
+        // NUL. Stopping at the first NUL — as this did — is one byte short for
+        // every string-less record, so each one misaligned everything after it.
+        // On the reporter's B450 that meant the walk died after 746 of 1948
+        // bytes: the type 17 records at 1277 and 1498 ("P0 CHANNEL A", part
+        // CMK32GX4M2A2133C13) were never reached, and the panel said the table
+        // listed no populated memory. `dmidecode` scans for the double NUL.
+        while p + 1 < blob.len() && (blob[p] != 0 || blob[p + 1] != 0) {
             if blob[p] == 0 {
-                break; // the terminating double NUL
+                p += 1; // a string boundary, not the end of the area
+                continue;
             }
             let start = p;
             while p < blob.len() && blob[p] != 0 {
                 p += 1;
             }
             strings.push(String::from_utf8_lossy(&blob[start..p]).trim().to_string());
-            p += 1;
         }
-        // Advance past the string area and its final NUL.
-        let next = p.saturating_add(1).max(i + 4);
+        // `p` is on the first byte of the terminating double NUL.
+        let next = p.saturating_add(2).max(i + 4);
         out.push(SmbiosRecord {
             ty,
             length,
@@ -155,16 +192,34 @@ fn smbios_type17() -> (Vec<Dimm>, Option<String>) {
         }
     };
     let records = smbios_records(&blob);
+    if records.is_empty() {
+        return (
+            Vec::new(),
+            Some(format!(
+                "SMBIOS blob is readable ({} bytes) but carries no entry point anchor, so the                  structures could not be located",
+                blob.len()
+            )),
+        );
+    }
     let mut out = Vec::new();
+    let mut type17 = 0usize;
     for r in records.iter().filter(|r| r.ty == 17) {
+        type17 += 1;
         if let Some(d) = decode_memory_device(r) {
             out.push(d);
         }
     }
     if out.is_empty() {
+        // Counts rather than a verdict: whether this is firmware that never
+        // fills the table or a machine whose slots really are empty is the
+        // reader's call, and the numbers are what makes it.
         return (
             Vec::new(),
-            Some("SMBIOS readable but it lists no populated memory devices".to_string()),
+            Some(format!(
+                "SMBIOS parsed {} structures, {} of them memory devices (type 17), none                  reporting a size — either the firmware leaves them unpopulated or every slot                  is empty",
+                records.len(),
+                type17
+            )),
         );
     }
     (out, None)
@@ -209,18 +264,27 @@ fn string(r: &SmbiosRecord, off: usize) -> Option<String> {
 }
 
 fn decode_memory_device(r: &SmbiosRecord) -> Option<Dimm> {
-    // DSP0134 7.18: Size at 0x0Ch. 0xFFFF = unknown, 0x7FFF = extended size
-    // field, bit 15 set = value is in MB, otherwise KB.
+    // DSP0134 7.18: Size at 0x0Ch, 0 = empty slot, 0xFFFF = unknown, 0x7FFF =
+    // look in the extended field. The unit bit runs the other way from the
+    // intuitive reading, so it is worth quoting the spec's own example: "the
+    // value 8100h identifies a 256 KB memory device and 0100h identifies a
+    // 256 MB memory device" — bit 15 set means KB, clear means MB. An earlier
+    // version of this decoder had it inverted, which would have called a 16 GB
+    // module 16 MB, and its own test agreed with the mistake because the
+    // fixture was built from the same misreading.
     let size_field = u16(r, 0x0C)?;
     let size_bytes = match size_field {
         0xFFFF => None,
         0x7FFF => u32v(r, 0x1C).map(|mb| mb * 1024 * 1024), // Extended Size, MB
-        v if v & 0x8000 != 0 => Some((v & 0x7FFF) as u64 * 1024 * 1024),
-        v => Some(v as u64 * 1024),
+        v if v & 0x8000 != 0 => Some((v & 0x7FFF) as u64 * 1024),
+        v => Some(v as u64 * 1024 * 1024),
     };
-    // Empty slots are not interesting for a benchmark, and counting them as
-    // modules would misreport the population.
-    if size_field == 0 || size_bytes.unwrap_or(0) == 0 {
+    // Size 0 means the socket is empty: not interesting for a benchmark, and
+    // counting it as a module would misreport the population. An *unknown*
+    // size is the other code, 0xFFFF, and stays — empty sockets report 0, so a
+    // record that merely cannot say how big it is is still a module, and the
+    // row says Unknown rather than vanishing.
+    if size_field == 0 {
         return None;
     }
 
@@ -370,12 +434,31 @@ fn spd_modules() -> Vec<SpdTimings> {
 
 /// Decode what the SPD layout can honestly give us.
 ///
-/// DDR4 byte numbers follow JESD400 as implemented by U-Boot's `ddr_spd.h`:
-/// byte 1 is the key byte (0x12 = DDR4 SDRAM), byte 3 the module type, byte 17
-/// the time bases, 18 `tCKAVGmin`, 24/25/26 tAA/tRCD/tRP minima, 27/28 tRAS.
-/// Boards whose firmware never wrote the EEPROM (common on soldered LPDDR and on
-/// VMs) are full of zeros: every value then fails a plausibility gate and the
-/// result is Unknown, which is the correct answer.
+/// DDR4 byte numbers are the SPD byte numbers of JESD403-1, as used by
+/// `decode-dimms` and by U-Boot; they are *not* file offsets, and the values
+/// below are the ones that matter:
+///
+/// ```text
+///   1  SPD revision, major.minor in BCD — 0x10 is revision 1.0, 0x12 is 1.2
+///   2  key byte / fundamental memory type: 12 (0x0C) = DDR4, 14 = DDR4E
+///   3  module type, low nibble
+///  17  time bases: bits 1:0 and 7:6 must both be zero, which leaves the only
+///      combination any shipping module uses: MTB = 125 ps, FTB = 1 ps
+///  18  tCKAVGmin in MTB units, with a signed FTB correction at byte 125
+///  20..23 supported CAS latencies as a 32-bit little-endian bitmask; the
+///      base CL is 23 if byte 23 has bit 7 set, otherwise 7
+///  24/25/26 tAAmin/tRCDmin/tRPmin in MTB units, signed FTB corrections at
+///      123/122/121
+///  27/28 tRASmin as one 12-bit MTB value
+/// ```
+///
+/// Two earlier assumptions here were wrong in a way that hid each other. The
+/// key byte is byte 2 and DDR4's value is 12, not `0x12` at byte 1 — byte 1
+/// holds the SPD revision, so a revision-1.0 module was refused as corrupt
+/// while this machine's own revision-1.2 module passed the check by accident.
+/// And the DDR4 time base is 125 ps, not the 1000 ps of DDR2/DDR3: with the
+/// old base a 13.75 ns tAAmin decoded as 110 ns, tripped the plausibility
+/// gate, and this panel reported a healthy DDR4-3200 module as blank.
 fn decode_spd(generation: &str, device: &str, b: &[u8]) -> SpdTimings {
     let mut t = SpdTimings {
         generation: Some(generation.to_string()),
@@ -397,10 +480,22 @@ fn decode_spd(generation: &str, device: &str, b: &[u8]) -> SpdTimings {
         t.note = "SPD EEPROM read was too short to decode".to_string();
         return t;
     }
-    if b[1] != 0x12 {
+    // An EEPROM of all zeros is a different failure from one that disagrees
+    // with the binding: nothing was ever written to it, or the driver is bound
+    // to an address with no module behind it.
+    if b[..32].iter().all(|&v| v == 0) {
+        t.note = "SPD EEPROM is present but reads as all zeros, so nothing could be decoded \
+                  (no table behind the driver binding)"
+            .to_string();
+        return t;
+    }
+    if b[2] != SPD_DDR4 && b[2] != SPD_DDR4E {
         t.note = format!(
-            "SPD key byte is {:#04X}, not 0x12 (DDR4): the driver binding says {generation} but \
-             the contents disagree, so nothing is decoded",
+            "SPD key byte (byte 2) says {} ({:#04X}), not DDR4, although the driver binding says \
+             {generation}; nothing is decoded. Byte 1 ({:#04X}) is the SPD revision, not a key \
+             byte.",
+            spd_memory_type_name(b[2]),
+            b[2],
             b[1]
         );
         return t;
@@ -410,80 +505,179 @@ fn decode_spd(generation: &str, device: &str, b: &[u8]) -> SpdTimings {
         0x00 => Some("extended module type"),
         0x01 => Some("RDIMM"),
         0x02 => Some("UDIMM"),
-        0x03 => Some("SODIMM"),
+        0x03 => Some("SO-DIMM"),
         0x04 => Some("LRDIMM"),
         0x05 => Some("Mini-RDIMM"),
         0x06 => Some("Mini-UDIMM"),
-        0x08 => Some("72b SODIMM"),
-        0x09 => Some("72b RDIMM"),
+        0x08 => Some("72-bit SO-RDIMM"),
+        0x09 => Some("72-bit SO-UDIMM"),
+        0x0C => Some("16-bit SO-DIMM"),
+        0x0D => Some("32-bit SO-DIMM"),
+        0x0F => Some("no base memory"),
         _ => None,
     };
+    let prefix = module_type
+        .map(|m| format!("{m} module, "))
+        .unwrap_or_default();
 
-    // Time bases: byte 17 low nibble is MTB (0 = 1000 ps, 1 = 2500 ps,
-    // 2 = 500 ps), high nibble the fine time base. Every DDR4 module in the wild
-    // uses MTB = 1000 ps; anything else is treated as unreadable rather than
-    // assumed.
-    let mtb_ns = match b[17] & 0x0F {
-        0 => Some(1.0f64),
-        other => {
-            let _ = other;
-            None
+    // Time bases. There is exactly one valid combination in DDR4, so anything
+    // else means the table is not what the layout claims.
+    if (b[17] & 0x03) != 0 || (b[17] & 0xC0) != 0 {
+        t.note = format!(
+            "{prefix}unsupported SPD time base {:#04X}, timings Unknown",
+            b[17]
+        );
+        return t;
+    }
+    let mtb_ns = MTB_NS_DDR4;
+    // The signed 1 ps corrections are bytes 121 to 125. A read that stops short
+    // of them loses at most 127 ps per timing, and says so rather than
+    // silently treating them as zero.
+    let has_fine = b.len() > 125;
+    let signed = |v: u8| -> f64 {
+        if v & 0x80 != 0 {
+            f64::from(v as i8)
+        } else {
+            f64::from(v)
         }
     };
-    let Some(mtb) = mtb_ns else {
-        if let Some(m) = module_type {
+    let ns = |byte: usize, fine: usize| -> f64 {
+        let correction = if has_fine { signed(b[fine]) } else { 0.0 };
+        f64::from(b[byte]) * mtb_ns + correction * FTB_NS
+    };
+
+    // The rated speed comes from tCKAVGmin alone, so a module whose other
+    // fields are blank can still be identified by it.
+    //
+    // Vendors round that field, so the raw value lands a fraction of a ps off
+    // the bin the module is actually rated for: the reporter's kit computes
+    // 0.938 ns, which divides to 2132 MT/s, while the modules are labelled and
+    // sold as DDR4-2133 (tCKAVGmin = 7.5/8 = 0.9375 ns). Snap to the JEDEC bin
+    // when the value is within one fine-time step of it, as `decode-dimms`
+    // does, so the panel agrees with the sticker.
+    let bin = |mut ctime: f64| -> f64 {
+        for n in 7..15u32 {
+            let standard = 7.5 / f64::from(n);
+            if (ctime - standard).abs() < FTB_NS {
+                ctime = standard;
+                break;
+            }
+        }
+        ctime
+    };
+    let tck = plausible(bin(ns(18, 125)), 0.25, 3.2);
+    if let Some(tck) = tck {
+        t.max_mts = Some((2000.0 / tck) as u32);
+    }
+
+    let taa = plausible(ns(24, 123), 5.0, 40.0);
+    let trcd = plausible(ns(25, 122), 5.0, 40.0);
+    let trp = plausible(ns(26, 121), 5.0, 40.0);
+    // tRASmin is a single 12-bit value spread over two bytes, in MTB units.
+    let tras_raw = u16::from(b[27] & 0x0F) << 8 | u16::from(b[28]);
+    let tras = plausible(f64::from(tras_raw) * mtb_ns, 15.0, 120.0);
+
+    t.tAA_ns = taa.map(|v| v as f32);
+    t.tRCD_ns = trcd.map(|v| v as f32);
+    t.tRP_ns = trp.map(|v| v as f32);
+    t.tRAS_ns = tras.map(|v| v as f32);
+
+    // Supported CAS latencies, independent of the minima above: the bitmask
+    // says what the module can do, the minima say what it was tested at.
+    let cas_mask =
+        (b[20] as u32) | ((b[21] as u32) << 8) | ((b[22] as u32) << 16) | ((b[23] as u32) << 24);
+    let cas_base = if b[23] & 0x80 != 0 { 23 } else { 7 };
+    let max_cl = (0..30u32)
+        .rev()
+        .find(|ii| (cas_mask >> ii) & 1 != 0)
+        .map(|ii| cas_base + ii);
+
+    match (taa, trcd, trp, tras, tck) {
+        (Some(taa), Some(trcd), Some(trp), Some(tras), Some(tck)) => {
+            // JEDEC rounds a timing up to the next whole cycle once 25 ps of
+            // slack is allowed for, which is what `decode-dimms` does; plain
+            // rounding would sometimes print a cycle count the module cannot
+            // actually meet.
+            let cycles = |ns: f64| ((ns / tck) - 0.025).ceil() as u32;
+            // tAA says how many cycles are needed; the bitmask says which
+            // latencies the module offers. The CAS number is the smallest
+            // offered one that meets the need, so the panel never prints a
+            // latency the module does not actually support.
+            let cl = |need: u32| -> u32 {
+                (0..30u32)
+                    .filter(|ii| (cas_mask >> ii) & 1 != 0)
+                    .map(|ii| cas_base + ii)
+                    .find(|cl| *cl >= need)
+                    .unwrap_or(need)
+            };
+            t.cycles = Some(format!(
+                "{}-{}-{}-{}",
+                cl(cycles(taa)),
+                cycles(trcd),
+                cycles(trp),
+                cycles(tras)
+            ));
+            let note = format!(
+                "{prefix}rated SPD timings at tCKAVGmin = {:.3} ns ({} MT/s){cl}; these are the \
+                 module's published minima, not the values the controller is running{fine}",
+                tck,
+                (2000.0 / tck) as u32,
+                cl = max_cl
+                    .map(|c| format!(", supported CAS latencies up to CL{c}"))
+                    .unwrap_or_default(),
+                fine = if has_fine {
+                    String::new()
+                } else {
+                    "; the read stopped before byte 125, so the 1 ps fine-time corrections are \
+                     missing"
+                        .to_string()
+                }
+            );
+            t.note = note;
+        }
+        _ => {
+            // Say what was read, not just that it failed: a table that is all
+            // zeros and a table with one implausible field are different
+            // problems, and the hex is the only way to tell them apart
+            // remotely.
             t.note = format!(
-                "{m} module; unsupported SPD time base {:#04X}, timings Unknown",
-                b[17]
+                "{prefix}SPD EEPROM is present but its timing fields are blank or implausible \
+                 (tAA/tRCD/tRP bytes read {:#04X}/{:#04X}/{:#04X}, time base byte {:#04X}), so \
+                 timings are Unknown",
+                b[24], b[25], b[26], b[17]
             );
         }
-        return t;
-    };
-
-    let taa = plausible(b[24] as f64 * mtb, 5.0, 40.0);
-    let trcd = plausible(b[25] as f64 * mtb, 5.0, 40.0);
-    let trp = plausible(b[26] as f64 * mtb, 5.0, 40.0);
-    let tras = plausible(
-        (b[28] as f64 + ((b[27] & 0x0F) as f64) * 256.0) * mtb,
-        15.0,
-        120.0,
-    );
-    let tck = plausible(b[18] as f64 * mtb, 0.3, 3.2);
-
-    t.tAA_ns = taa.map(|v| v as u32);
-    t.tRCD_ns = trcd.map(|v| v as u32);
-    t.tRP_ns = trp.map(|v| v as u32);
-    t.tRAS_ns = tras.map(|v| v as u32);
-
-    if let (Some(taa), Some(trcd), Some(trp), Some(tras), Some(tck)) = (taa, trcd, trp, tras, tck) {
-        let cycles = |ns: f64| (ns / tck).round() as u32;
-        t.cas_string = Some(format!(
-            "{}-{}-{}-{}",
-            cycles(taa),
-            cycles(trcd),
-            cycles(trp),
-            cycles(tras)
-        ));
-        let mut note = format!(
-            "rated SPD timings at tCKAVGmin = {:.3} ns ({} MT/s); these are the module's \
-             published minima, not the values the controller is running",
-            tck,
-            (2000.0 / tck).round() as u32
-        );
-        if let Some(m) = module_type {
-            note = format!("{m} module, {note}");
-        }
-        t.note = note;
-    } else {
-        let mut note = "SPD EEPROM is present but its timing fields are blank or implausible \
-                        (firmware did not populate them), so timings are Unknown"
-            .to_string();
-        if let Some(m) = module_type {
-            note = format!("{m} module, {note}");
-        }
-        t.note = note;
     }
     t
+}
+
+/// The one time base DDR4 modules ship with, in ns.
+const MTB_NS_DDR4: f64 = 0.125;
+/// Fine time base, in ns (1 ps).
+const FTB_NS: f64 = 0.001;
+/// Key byte values (SPD byte 2), from the JEDEC memory-type list that
+/// `decode-dimms` follows: 12 = DDR4 SDRAM, 14 = DDR4E SDRAM.
+const SPD_DDR4: u8 = 12;
+const SPD_DDR4E: u8 = 14;
+
+/// Names for the SPD byte-2 memory-type codes, used to say *what* was found
+/// rather than only that it disagreed.
+fn spd_memory_type_name(key: u8) -> &'static str {
+    match key {
+        4 => "SDR SDRAM",
+        6 => "DDR SGRAM",
+        7 => "DDR SDRAM",
+        8 => "DDR2 SDRAM",
+        11 => "DDR3 SDRAM",
+        12 => "DDR4 SDRAM",
+        14 => "DDR4E SDRAM",
+        15 => "LPDDR3 SDRAM",
+        16 => "LPDDR4 SDRAM",
+        17 => "LPDDR4X SDRAM",
+        18 => "DDR5 SDRAM",
+        19 => "LPDDR5 SDRAM",
+        _ => "an unlisted memory type",
+    }
 }
 
 /// Reject values outside `lo..=hi` — the gate that keeps a zeroed-out EEPROM
@@ -505,12 +699,35 @@ mod tests {
     /// whose DMI table is unreadable.
     /// `size_field` is the raw 16-bit Size field: KB, MB with bit 15 set,
     /// 0 for an empty slot, or 0x7FFF to point at the extended field.
+    /// One SMBIOS structure: four header bytes, the formatted body, the
+    /// NUL-terminated strings and the terminating double NUL.
+    fn smbios_record(ty: u8, body: &[u8], strings: &[&str]) -> Vec<u8> {
+        let mut b = vec![ty, (4 + body.len()) as u8, 0x00, 0x04];
+        b.extend_from_slice(body);
+        for s in strings {
+            b.extend_from_slice(s.as_bytes());
+            b.push(0);
+        }
+        b.push(0);
+        if strings.is_empty() {
+            // With no strings the area is nothing but its terminating double
+            // NUL, which is the case that used to desync the walk.
+            b.push(0);
+        }
+        b
+    }
+
     fn fixture_type17(size_field: u16, part: &str, slot: &str) -> Vec<u8> {
+        smbios_record(
+            17,
+            &type17_body(size_field),
+            &["Bank 0", slot, part], // string 1 = bank, 2 = locator, 3 = part
+        )
+    }
+
+    /// The formatted area of a type 17 record, minus the four header bytes.
+    fn type17_body(size_field: u16) -> Vec<u8> {
         let mut b = Vec::new();
-        // header: type, length, handle
-        b.push(17u8);
-        b.push(0x22); // 34 bytes of formatted area (SMBIOS 2.7)
-        b.extend_from_slice(&[0x00, 0x04]); // handle
         b.extend_from_slice(&[0xFF, 0xFF]); // 0x04 physical array handle
         b.extend_from_slice(&[0xFE, 0xFF]); // 0x06 error info handle
         b.extend_from_slice(&[0xC0, 0x00]); // 0x08 total width 192
@@ -532,21 +749,14 @@ mod tests {
                       // of the formatted area: length is 0x22, so anything further here would
                       // be read as the string area and swallow the strings below.
         b.extend_from_slice(&[0x00; 6]);
-        // string area
-        b.extend_from_slice(b"Bank 0\0");
-        b.extend_from_slice(slot.as_bytes());
-        b.push(0);
-        b.extend_from_slice(part.as_bytes());
-        b.push(0);
-        b.push(0); // terminating NUL
         b
     }
 
     #[test]
     fn type17_record_decodes_with_spec_offsets() {
-        // 8 GiB expressed in megabytes (bit 15 set), which is the only way a
-        // 16-bit field can say it.
-        let blob = fixture_type17(0x8000 | 8192, "CMP32GX4M2B3200C16", "DIMM_A1");
+        // 8 GiB as 8192 megabytes with the unit bit clear (bit 15 set would
+        // mean kilobytes — see `size_field_units_follow_the_spec_example`).
+        let blob = fixture_type17(8192, "CMP32GX4M2B3200C16", "DIMM_A1");
         let records = smbios_records(&blob);
         assert_eq!(records.len(), 1, "{records:?}");
         let d = decode_memory_device(&records[0]).expect("decode");
@@ -562,17 +772,39 @@ mod tests {
         assert_eq!(d.source, "SMBIOS type 17");
     }
 
-    #[test]
-    fn empty_slots_are_skipped_and_mb_flag_is_honoured() {
-        // Size 0 = empty slot.
-        let blob = fixture_type17(0, "X", "DIMM_A2");
-        assert!(decode_memory_device(&smbios_records(&blob)[0]).is_none());
+    /// Decode one Size field on its own, so the unit convention can be tested
+    /// against the spec's own worked example rather than against a fixture
+    /// built from the same reading.
+    fn size_of(size_field: u16) -> Option<u64> {
+        let blob = smbios_record(17, &type17_body(size_field), &["Bank 0", "DIMM 0", "X"]);
+        let records = smbios_records(&blob);
+        decode_memory_device(records.first()?).map(|d| d.size_bytes.unwrap_or(0))
+    }
 
-        // Size with bit 15 set = megabytes (the flag is the high byte, which
-        // `fixture_type17` already encodes little-endian).
-        let blob = fixture_type17(0x8000 | 16, "X", "DIMM_A2");
+    #[test]
+    fn size_field_units_follow_the_spec_example() {
+        // DSP0134 7.18, quoted: "the value 8100h identifies a 256 KB memory
+        // device and 0100h identifies a 256 MB memory device". Bit 15 set means
+        // kilobytes and clear means megabytes — the opposite of what looks
+        // intuitive, and this decoder had it the other way round once, which
+        // would have called a 16 GiB stick 16 MB. Its own fixture agreed with
+        // the mistake, which is the lesson: the expectations below are the
+        // spec's numbers, not derived from the code.
+        assert_eq!(size_of(0x8100), Some(256 * 1024));
+        assert_eq!(size_of(0x0100), Some(256 * 1024 * 1024));
+        // 16384 in the low bits, unit bit clear: a 16 GiB stick, which is what
+        // the reporter's board reports for each of its two modules.
+        assert_eq!(size_of(0x4000), Some(16 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn an_empty_slot_is_skipped() {
+        // Size 0 = no device installed in the socket (DSP0134 7.18).
+        assert_eq!(size_of(0), None);
+        // Unknown size keeps the module but says so, rather than dropping it.
+        let blob = smbios_record(17, &type17_body(0xFFFF), &["Bank 0", "DIMM 0", "X"]);
         let d = decode_memory_device(&smbios_records(&blob)[0]).expect("decode");
-        assert_eq!(d.size_bytes, Some(16 * 1024 * 1024));
+        assert_eq!(d.size_bytes, None);
     }
 
     #[test]
@@ -602,59 +834,168 @@ mod tests {
         );
     }
 
+    /// A record with no strings is nothing but the terminating double NUL after
+    /// its formatted area. The old walker stopped at the first of those two
+    /// bytes, so it resumed one byte early and read every later structure out
+    /// of place: on the reporter's B450 the walk died after 746 of 1948 bytes
+    /// and never reached the type 17 records at 1277 and 1498, which made a
+    /// board with 32 GiB fitted report no populated memory.
     #[test]
-    fn spd_decoder_accepts_a_realistic_ddr4_blob() {
-        // 16 GiB DDR4-3200 UDIMM: tCKAVGmin 0.625 ns is below the 1 ns MTB, so
-        // firmware reports 1 ns rounded minima: tAA 14, tRCD 15, tRP 15, tRAS 32.
-        let mut b = vec![0u8; 256];
-        b[1] = 0x12; // key byte: DDR4
-        b[3] = 0x02; // UDIMM
-        b[17] = 0x00; // MTB = 1000 ps
-        b[18] = 1; // tCKAVGmin = 1 ns with MTB granularity
-        b[24] = 14;
-        b[25] = 15;
-        b[26] = 15;
-        b[27] = 0x00; // tRAS high nibble
-        b[28] = 32; // tRAS low byte
-        let t = decode_spd("DDR4", "0-0052", &b);
-        assert_eq!(t.tAA_ns, Some(14));
-        assert_eq!(t.tRAS_ns, Some(32));
-        assert_eq!(t.cas_string.as_deref(), Some("14-15-15-32"));
+    fn a_record_without_strings_does_not_desync_the_walk() {
+        let mut blob = smbios_record(32, &[0u8; 7], &[]); // System Boot, no strings
+        blob.extend(smbios_record(
+            17,
+            &type17_body(0x4000), // 16384 MB
+            &["Bank 0", "P0 CHANNEL A", "CMK32GX4M2A2133C13"],
+        ));
+        let records = smbios_records(&blob);
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert_eq!(records[1].ty, 17);
+        let d = decode_memory_device(&records[1]).expect("decode");
+        assert_eq!(d.size_bytes, Some(16 * 1024 * 1024 * 1024));
+        assert_eq!(d.slot.as_deref(), Some("P0 CHANNEL A"));
+        assert_eq!(d.part_number.as_deref(), Some("CMK32GX4M2A2133C13"));
+    }
+
+    /// The entry point structure and the structures live in separate files on a
+    /// modern kernel, but a blob that does carry an anchor must still parse.
+    #[test]
+    fn an_entry_point_is_skipped_when_present() {
+        let mut blob = vec![0u8; 0x18];
+        blob[0..5].copy_from_slice(b"_SM3_");
+        blob[6] = 0x18; // 64-bit entry point length
+        let mut inner = vec![0u8; 0x1f];
+        inner[0..4].copy_from_slice(b"_SM_");
+        inner[5] = 0x1f; // 32-bit entry point length
+        blob.extend(inner);
+        blob.extend(smbios_record(
+            17,
+            &type17_body(8192),
+            &["Bank 0", "DIMM 0", "X"],
+        ));
+        let records = smbios_records(&blob);
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0].ty, 17);
+    }
+
+    /// The two modules from the ASRock B450 Pro4 R2.0 in issue #1, byte for
+    /// byte as read from `/sys/bus/i2c/devices/5-005x/eeprom` on that machine:
+    /// the first 32 bytes plus the fine-time byte at 125. `decode-dimms`, run
+    /// there against the same EEPROMs, reports DDR4 SDRAM, SPD revision 1.0,
+    /// UDIMM, 2133 MT/s (PC4-17000), 16384 MB, AA-RCD-RP-RAS 15-15-15-36 and
+    /// CAS latencies 9 to 16, with both block CRCs valid — so the assertions
+    /// below are the reference decoder's own answers, not this one's.
+    fn reporters_modules() -> Vec<u8> {
+        let mut b = vec![0u8; 512];
+        b[..32].copy_from_slice(&[
+            0x23, 0x10, 0x0c, 0x02, 0x85, 0x21, 0x00, 0x08, 0x00, 0x00, 0x00, 0x03, 0x09, 0x03,
+            0x00, 0x00, 0x00, 0x00, 0x08, 0x0c, 0xfc, 0x03, 0x00, 0x00, 0x6c, 0x6c, 0x6c, 0x11,
+            0x08, 0x74, 0xf0, 0x0a,
+        ]);
+        b[118] = 0xb5;
+        b[119] = 0xcf;
+        b[125] = 0xc2; // tCKAVGmin fine time: -62 ps, signed
+        b[126] = 0x7d; // block 0 CRC, low byte
+        b[127] = 0x54;
+        b
+    }
+
+    #[test]
+    fn the_reporters_ddr4_2133_kit_decodes() {
+        let t = decode_spd("DDR4", "5-0050", &reporters_modules());
+        assert_eq!(t.max_mts, Some(2133), "{t:?}");
+        assert_eq!(t.tAA_ns, Some(13.5), "{t:?}");
+        assert_eq!(t.tRCD_ns, Some(13.5), "{t:?}");
+        assert_eq!(t.tRP_ns, Some(13.5), "{t:?}");
+        assert_eq!(t.tRAS_ns, Some(33.0), "{t:?}");
+        assert_eq!(t.cycles.as_deref(), Some("15-15-15-36"), "{t:?}");
         assert!(t.note.contains("UDIMM"), "{}", t.note);
+        assert!(t.note.contains("up to CL16"), "{}", t.note);
         assert!(t.note.contains("not the values"), "{}", t.note);
     }
 
     #[test]
-    fn zeroed_spd_is_reported_as_unknown_not_as_zero_timings() {
-        // Exactly what this test box's soldered LPDDR reports: a DDR4 key byte
-        // and nothing else.
-        let mut b = vec![0u8; 256];
-        b[1] = 0x12;
+    fn a_revision_1_0_module_is_not_a_bad_key_byte() {
+        // Issue #1 in one byte: SPD byte 1 is 0x10, which is revision 1.0. The
+        // released decoder looked for the key byte there and refused both
+        // modules; the key byte is byte 2, and theirs says 0x0C = DDR4.
+        let b = reporters_modules();
+        assert_eq!(b[1], 0x10);
+        assert_eq!(b[2], 0x0c);
+        let t = decode_spd("DDR4", "5-0050", &b);
+        assert!(!t.note.contains("key byte"), "{}", t.note);
+        assert!(t.cycles.is_some(), "nothing was decoded: {}", t.note);
+    }
+
+    #[test]
+    fn a_disagreeing_key_byte_is_named_not_just_hex_dumped() {
+        let mut b = reporters_modules();
+        b[2] = 11; // DDR3 SDRAM, while the driver binding says DDR4
         let t = decode_spd("DDR4", "0-0052", &b);
-        assert_eq!(t.tAA_ns, None);
-        assert_eq!(t.cas_string, None);
-        assert!(
-            t.note.contains("Unknown") || t.note.contains("implausible"),
-            "{}",
-            t.note
-        );
+        assert_eq!(t.cycles, None);
+        assert!(t.note.contains("DDR3 SDRAM"), "{}", t.note);
+        // The revision byte is called a revision, so the message cannot send a
+        // reader looking for 0x12 in the wrong place again.
+        assert!(t.note.contains("revision"), "{}", t.note);
+    }
+
+    #[test]
+    fn a_blank_spd_is_reported_as_blank() {
+        let b = vec![0u8; 512];
+        let t = decode_spd("DDR4", "0-0052", &b);
+        assert_eq!(t.cycles, None);
+        assert_eq!(t.max_mts, None);
+        assert!(t.note.contains("all zeros"), "{}", t.note);
         assert_eq!(t.generation.as_deref(), Some("DDR4"));
     }
 
     #[test]
-    fn spd_decoder_refuses_a_mismatched_key_byte() {
-        let b = vec![0xAAu8; 256];
-        let t = decode_spd("DDR4", "0-0052", &b);
-        assert_eq!(t.cas_string, None);
-        assert!(t.note.contains("disagree"), "{}", t.note);
+    fn an_unsupported_time_base_stops_the_decode() {
+        let mut b = reporters_modules();
+        b[17] = 0x01; // bits 1:0 must be zero; no shipping module does this
+        let t = decode_spd("DDR4", "5-0050", &b);
+        assert_eq!(t.cycles, None);
+        assert!(t.note.contains("time base"), "{}", t.note);
+    }
+
+    #[test]
+    fn the_fine_time_correction_is_signed() {
+        // -62 ps is what the reporter's module carries on tCKAVGmin; a decoder
+        // that reads it unsigned would claim 125 ps extra per cycle and land on
+        // 1976 MT/s instead of 2133.
+        let full = reporters_modules();
+        assert_eq!(full[125], 0xc2);
+        let t = decode_spd("DDR4", "5-0050", &full);
+        assert_eq!(t.max_mts, Some(2133));
+
+        let mut b = reporters_modules();
+        b[123] = 0xe0; // tAAmin fine: -32 ps
+        let t = decode_spd("DDR4", "5-0050", &b);
+        let taa = t.tAA_ns.expect("tAA");
+        assert!((taa - 13.468).abs() < 0.001, "tAA {taa}");
+    }
+
+    #[test]
+    fn a_short_spd_read_says_the_fine_bytes_are_missing() {
+        // The corrections are bytes 121..125, so a read that stops before them
+        // still decodes — it must not pretend they were zero.
+        let short = &reporters_modules()[..120];
+        let t = decode_spd("DDR4", "5-0050", short);
+        assert!(t.note.contains("fine-time"), "{}", t.note);
+        assert_eq!(t.tAA_ns, Some(13.5));
+        // Without the -62 ps correction tCKAVGmin reads as a round 1.0 ns, so
+        // the module looks like a 2000 MT/s part rather than the DDR4-2133 it
+        // is. That drift is the reason the note has to say so.
+        assert_eq!(t.max_mts, Some(2000), "{}", t.note);
     }
 
     #[test]
     fn ddr5_spd_is_reported_without_invented_timings() {
-        let b = vec![0x12u8; 256];
+        let mut b = vec![0u8; 256];
+        b[2] = 18; // 18 = DDR5 SDRAM
         let t = decode_spd("DDR5", "0-0051", &b);
         assert_eq!(t.generation.as_deref(), Some("DDR5"));
-        assert_eq!(t.cas_string, None);
+        assert_eq!(t.cycles, None);
         assert!(t.note.contains("not decoded"), "{}", t.note);
     }
 

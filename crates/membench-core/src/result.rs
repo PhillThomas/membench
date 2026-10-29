@@ -641,21 +641,29 @@ pub struct Dimm {
 /// actual (running timings need memory-controller register access per vendor).
 // The field names are the JEDEC timing mnemonics, not Rust identifiers in
 // disguise: `tAA_ns` is what the SPD layout calls it and the JSON is public.
+// They are floats because the layout resolves finer than a nanosecond: the
+// reporter's own module publishes tAAmin = 13.75 ns, and an integer field
+// would have printed that as 13 and called it a spec figure.
 #[allow(non_snake_case)]
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct SpdTimings {
-    /// e.g. "16-18-18-36" in tCL-tRCD-tRP-tRAS order, if derivable.
-    pub cas_string: Option<String>,
-    pub tAA_ns: Option<u32>,
-    pub tRCD_ns: Option<u32>,
-    pub tRP_ns: Option<u32>,
-    pub tRAS_ns: Option<u32>,
+    /// AA-RCD-RP-RAS in cycles at tCKAVGmin, JEDEC-rounded, if derivable. Not
+    /// a CAS *rating* — the label used to imply one: which CAS a module runs
+    /// at is the controller's pick from the supported set, and the note
+    /// carries that set.
+    pub cycles: Option<String>,
+    pub tAA_ns: Option<f32>,
+    pub tRCD_ns: Option<f32>,
+    pub tRP_ns: Option<f32>,
+    pub tRAS_ns: Option<f32>,
+    /// Rated speed from tCKAVGmin in MT/s: the number on the module's label.
+    pub max_mts: Option<u32>,
     pub generation: Option<String>,
     pub device: String,
     pub note: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct MemoryInfo {
     pub total_bytes: Option<u64>,
     pub mem_type: Option<String>,
@@ -696,7 +704,7 @@ pub struct OsInfo {
 }
 
 /// Everything the system panel and the JSON document report.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct SystemInfo {
     pub cpu: CpuInfo,
     pub cores: Vec<CoreInfo>,

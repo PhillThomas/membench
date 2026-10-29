@@ -383,13 +383,29 @@ not multiples of the vector width.
 
 ### What the DIMM panel can and cannot tell you
 
-`info` shows module size, speed and rated timings where the kernel exposes them
-(`/sys/devices/system/edac` and the `ee1004`/`spd5118` SPD drivers, which yield
-DDR4/DDR5 generation and timings). Where a module's part number cannot be read
-with a spec-verified decoder it is reported as `Unknown` rather than guessed
-from byte offsets in a blob whose layout is vendor-specific. Reading raw SMBIOS
-(`/sys/firmware/dmi/tables/DMI`) needs root and is often refused in containers;
-the panel says which source it used.
+`info` reads two independent sources and says which one it used. The SPD
+EEPROMs behind the `ee1004`/`spd5118` drivers give the module's *rated* figures
+— speed bin, AA-RCD-RP-RAS cycle set, tAA/tRCD/tRP/tRAS minima, the range of
+supported CAS latencies — always labelled rated, because the values a controller
+is actually running live in memory-controller registers that no interface
+standardises. SMBIOS type 17 gives the population: which sockets hold
+modules, their size, part number and manufacturer.
+
+Neither is easy to get right, and both were wrong in 0.1.0 in ways that only
+real hardware exposes: the DDR4 decoder looked for its key byte at SPD offset 1
+(— that is the SPD *revision*, so a revision-1.0 module was refused as corrupt)
+instead of offset 2, used the DDR2/DDR3 time base of 1000 ps where DDR4 defines
+125 ps, and the SMBIOS walker ended a record's string area at the first NUL
+where a string-less record's area is a *double* NUL, which desynchronised every
+record after it. Each of those is now fixed against a fixture whose expected
+values come from outside this codebase: the SPD cases are asserted to match
+`decode-dimms` run on the same bytes, and the size field's kilobyte/megabyte
+bit is asserted against the worked example quoted in DSP0134 itself.
+
+Still not claimed: a channel count. Two modules on two channels look identical
+to two modules on one channel, and only the controller knows how it interleaves.
+Reading raw SMBIOS (`/sys/firmware/dmi/tables/DMI`) needs root and is often
+refused in containers, where the panel says so and falls back to what it has.
 
 ## JSON
 
