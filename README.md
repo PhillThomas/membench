@@ -53,11 +53,17 @@ cargo build --release          # never --debug; see above
 ./target/release/membench self-test
 ```
 
-On Arch (including Omarchy):
+On Arch (including Omarchy), to install it as a package:
 
 ```sh
-makepkg -si --config packaging/PKGBUILD   # clones from Gogs over SSH with your key
+cd packaging && makepkg -si    # clones main from Gogs over SSH, with your key
 ```
+
+That path clones `main` from the remote and ignores any working copy, so for a
+change you are trying out before it is pushed, build the tree you are in with
+`cargo` and run `./target/release/membench` directly. `makepkg -p` names a
+different PKGBUILD but only one in the current directory, and `--config` is for
+`makepkg.conf`, not the PKGBUILD.
 
 `self-test` runs everything that does not need to time anything — CPU, cache and
 topology detection, every ISA path's checksum, buffer sizing, huge-page
