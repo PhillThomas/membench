@@ -402,16 +402,16 @@ pub fn system_panel(sys: &SystemInfo) -> String {
         if let Some(kind) = &d.device_type {
             f.push(kind.clone());
         }
-        // The check bits the module reports in its own widths. Nothing here is
-        // looked up: 72 over 64 is an ECC module because the extra eight bits
-        // go nowhere else, and a module that says 64 over 64 is told the same
-        // thing in the other direction rather than left ambiguous.
+        // The check bits the module reports in its own widths — and only when
+        // it reports any. 72 over 64 is an ECC module because the extra eight
+        // bits go nowhere else, and that is worth a column. The reverse is not:
+        // "non-ECC" is the overwhelmingly common answer, and a panel that
+        // prints it on every row is printing the machine's lack of interest in
+        // the subject over and over. The widths themselves stay in the JSON,
+        // where every field is kept whether or not there was anything to say.
         match (d.ecc_bits, d.total_width_bits, d.data_width_bits) {
             (Some(bits), Some(total), Some(data)) if bits > 0 => {
                 f.push(format!("ECC {bits}-bit ({total}/{data})"));
-            }
-            (Some(0), Some(total), Some(data)) => {
-                f.push(format!("non-ECC ({total}/{data})"));
             }
             _ => {}
         }
@@ -449,25 +449,27 @@ pub fn system_panel(sys: &SystemInfo) -> String {
         let _ = writeln!(out, "  {:<11}{}  {}{tail}", "", place, f.join("  "));
     }
 
-    // The array's own answer, on its own line, because it is about the board and
-    // not about any module. It and the modules disagree often enough to be worth
-    // printing even when they agree: ECC unbuffered modules in a consumer board
-    // that corrects nothing, or a BIOS that reports a 72-bit module as 64-bit.
-    // Merging the two into one verdict would hide the only case a reader needs.
-    // The label says "ECC array" rather than "ECC" because the value underneath
-    // it is a capability the firmware claims for the slots, which on its own is
-    // no evidence that any installed module can honour it.
+    // The array's own answer, and only where there is ECC memory for it to be
+    // about. Consumer boards advertise correction they have nothing to correct
+    // — this project's test machine does — and while that is a fact about the
+    // firmware, the panel is a benchmark header and a reader scanning it wants
+    // to know whether ECC is in the measurement, not what the slots could
+    // theoretically do. Both answers remain in the JSON.
+    //
+    // When check bits are present the array still gets its own line, because
+    // "the modules carry them" and "something acts on them" are different
+    // claims: ECC unbuffered modules in a consumer board that leaves correction
+    // off look identical in a row until the array is asked.
     if let Some(corr) = &mem.error_correction {
-        let claimed = corr.ends_with("ECC") || corr.ends_with("parity");
-        let any_bits = mem.modules.iter().any(|d| d.ecc_bits.unwrap_or(0) > 0);
-        let note = match (claimed, any_bits) {
-            (true, false) if !mem.modules.is_empty() => {
-                ", which no installed module carries check bits to use"
-            }
-            (false, true) => ", while the modules carry check bits this array does not claim",
-            _ => "",
-        };
-        let _ = writeln!(out, "  {:<11}{corr}{note}", "ECC array");
+        if mem.modules.iter().any(|d| d.ecc_bits.unwrap_or(0) > 0) {
+            let claimed = corr.ends_with("ECC") || corr.ends_with("parity");
+            let note = if claimed {
+                String::new()
+            } else {
+                ", while the modules carry check bits this array does not claim".to_string()
+            };
+            let _ = writeln!(out, "  {:<11}{corr}{note}", "ECC array");
+        }
     }
 
     // SPD timings are the module's rated values, never its running values, and
@@ -888,20 +890,21 @@ mod tests {
     }
 
     #[test]
-    fn an_array_claiming_ecc_over_modules_with_no_check_bits_says_both() {
-        let sys = ecc_fixture("Multi-bit ECC");
-        let mut sys = sys;
+    fn a_board_that_offers_ecc_with_no_ecc_memory_installed_does_not_mention_it() {
+        // The reporter's B450: the array advertises multi-bit correction and the
+        // two sticks behind it carry no check bits at all. That is a fact about
+        // the firmware, not about the memory being benchmarked, and a panel a
+        // reader scans to ask "is ECC in these numbers?" should answer by
+        // staying quiet rather than by raising the subject and then taking it
+        // back again. Both claims are still in the JSON for anyone digging.
+        let mut sys = ecc_fixture("Multi-bit ECC");
         if let Some(d) = sys.memory.modules.first_mut() {
             d.total_width_bits = Some(64);
             d.data_width_bits = Some(64);
             d.ecc_bits = Some(0);
         }
         let text = system_panel(&sys);
-        assert!(text.contains("non-ECC (64/64)"), "{text}");
-        assert!(
-            text.contains("Multi-bit ECC, which no installed module carries check bits to use"),
-            "{text}"
-        );
+        assert!(!text.contains("ECC"), "ECC mentioned with none installed:\n{text}");
     }
 
     /// One server module, so the two disagreement tests differ only in what the
