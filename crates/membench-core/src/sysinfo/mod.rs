@@ -311,26 +311,36 @@ pub fn cache_summary(caches: &CacheInfo) -> String {
 }
 
 /// 16777216 → "16M", 49152 → "48K", 1536 → "1.5K", 512 → "512B".
+///
+/// The largest unit that fits always wins; exactness only decides whether the
+/// decimal point is printed. It used to be the other way round: the code asked
+/// "exact multiple of G? of M? of K?" and took the first yes, so a number that
+/// was exact at K — which is every memory total, since the kernel reports them
+/// in kilobytes — came out in K. A 32 GiB machine with 31.25 GiB usable printed
+/// "32765132K" while this project's own 16 GiB development box, being an exact
+/// multiple of a gigabyte, kept printing "16G". The bug could only hide on the
+/// machines within reach, which is the usual shape of these.
 pub fn human_bytes(bytes: u64) -> String {
-    // Exact multiples print without a decimal point; anything else gets one
-    // decimal at the largest unit that still fits. "B" is deliberately absent
-    // from the exact-match list: every number is a multiple of 1, so including
-    // it would swallow the rounded cases.
-    const UNITS: [(&str, u64); 3] = [("G", 1024 * 1024 * 1024), ("M", 1024 * 1024), ("K", 1024)];
+    // Tebibytes included because 2 TB is no longer exotic and "2048G" is the
+    // sort of line a reader misreads as a bug in something else. Bytes get no
+    // exact-match path: every number is a multiple of one, so it would swallow
+    // the rounded cases.
+    const UNITS: [(&str, u64); 4] = [
+        ("T", 1024 * 1024 * 1024 * 1024),
+        ("G", 1024 * 1024 * 1024),
+        ("M", 1024 * 1024),
+        ("K", 1024),
+    ];
     for (suffix, size) in UNITS {
-        if bytes >= size && bytes % size == 0 {
-            return format!("{}{}", bytes / size, suffix);
+        if bytes >= size {
+            return if bytes % size == 0 {
+                format!("{}{}", bytes / size, suffix)
+            } else {
+                format!("{:.1}{suffix}", bytes as f64 / size as f64)
+            };
         }
     }
-    if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.1}G", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.1}M", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1}K", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes}B")
-    }
+    format!("{bytes}B")
 }
 
 #[cfg(test)]
@@ -363,6 +373,12 @@ mod tests {
         assert_eq!(human_bytes(48 * 1024), "48K");
         assert_eq!(human_bytes(1024), "1K");
         assert_eq!(human_bytes(1536), "1.5K");
+        // The reporter's 32 GiB machine, whose /proc/meminfo says 32765132 kB:
+        // an exact multiple of 1024 and of nothing larger, so the old
+        // exactness-first ordering printed a 32 GiB box as "32765132K".
+        assert_eq!(human_bytes(32_765_132 * 1024), "31.2G");
+        // And a machine large enough to have needed a unit the list lacked.
+        assert_eq!(human_bytes(2 * 1024 * 1024 * 1024 * 1024), "2T");
     }
 
     #[test]
