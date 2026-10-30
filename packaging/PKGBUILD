@@ -1,4 +1,4 @@
-# Maintainer: Phill Thomas <phill@phillthomas.co.uk>
+# Maintainer: Phill Thomas <177207467+PhillThomas@users.noreply.github.com>
 #
 # `makepkg -si` in this directory clones the public GitHub repository over
 # HTTPS, so no key of yours is involved and anyone can build the package. Until
