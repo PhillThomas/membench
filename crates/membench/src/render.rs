@@ -904,7 +904,10 @@ mod tests {
             d.ecc_bits = Some(0);
         }
         let text = system_panel(&sys);
-        assert!(!text.contains("ECC"), "ECC mentioned with none installed:\n{text}");
+        assert!(
+            !text.contains("ECC"),
+            "ECC mentioned with none installed:\n{text}"
+        );
     }
 
     /// One server module, so the two disagreement tests differ only in what the
