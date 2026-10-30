@@ -256,26 +256,49 @@ fn smbios_tables() -> Smbios {
 /// are a definite answer and are kept as one, because "this array corrects
 /// nothing" is information. Reserved and unknown codes return `None` so the
 /// panel says nothing rather than guessing at a value the firmware invented.
+/// Memory Array — Error Correction Types, DSP0134 Table 75: `01h` Other, `02h`
+/// Unknown, `03h` None, `04h` Parity, `05h` Single-bit ECC, `06h` Multi-bit
+/// ECC, `07h` CRC.
+///
+/// Transcribed from the specification, which the first version of this function
+/// was not: that one was written from memory, put `06h` at "Multi-bit parity"
+/// and `03h` at "Multi-bit ECC", and every test written beside it agreed. A
+/// Xeon with eight ECC RDIMMs is what found it — the firmware there says `06h`
+/// and the invented table translated a machine with real ECC into parity, while
+/// a desktop saying `03h`, which means None, came out claiming Multi-bit ECC.
+/// A decoder's table is the one place where a confident guess is indistinguishable
+/// from knowledge, because nothing downstream can tell that the words underneath
+/// a label were never looked up.
+///
+/// `02h` Unknown and values outside `01h..=07h` are `None`: a field the firmware
+/// never implemented is not a statement that nothing protects the array.
 fn error_correction_name(v: u32) -> Option<String> {
     match v {
-        0x01 | 0x04 | 0x07 => Some("None".into()),
-        0x02 => Some("Single-bit ECC".into()),
-        0x03 => Some("Multi-bit ECC".into()),
-        0x05 => Some("Single-bit parity".into()),
-        0x06 => Some("Multi-bit parity".into()),
+        0x01 => Some("Other".into()),
+        0x03 => Some("None".into()),
+        0x04 => Some("Parity".into()),
+        0x05 => Some("Single-bit ECC".into()),
+        0x06 => Some("Multi-bit ECC".into()),
+        0x07 => Some("CRC".into()),
         _ => None,
     }
 }
 
-/// Type 16, first record, offset 0x06. Most boards have one array; a machine
-/// with several that disagree would need one line per array, and no firmware
-/// seen here does that, so the first answer is printed rather than a merged one.
+/// Type 16, offset 0x06, one entry per Physical Memory Array. The X99 rig
+/// publishes two arrays and they agree, so that is one name; where a machine's
+/// arrays disagree the answers are joined rather than resolved into one, because
+/// choosing between them would be stating something no firmware said. An array
+/// that gave no answer contributes nothing, and all-silent is `None`.
 fn array_error_correction(records: &[SmbiosRecord]) -> Option<String> {
-    records
-        .iter()
-        .find(|r| r.ty == 16)
-        .and_then(|r| byte(r, 0x06))
-        .and_then(error_correction_name)
+    let mut names: Vec<String> = Vec::new();
+    for r in records.iter().filter(|r| r.ty == 16) {
+        if let Some(name) = byte(r, 0x06).and_then(error_correction_name) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    (!names.is_empty()).then(|| names.join(" / "))
 }
 
 fn u16(r: &SmbiosRecord, off: usize) -> Option<u32> {
@@ -924,15 +947,38 @@ mod tests {
             smbios_records(&smbios_record(16, &b, &[]))
         };
         let named = |code: u8| array_error_correction(&record(code));
-        assert_eq!(named(0x03).as_deref(), Some("Multi-bit ECC"));
-        assert_eq!(named(0x02).as_deref(), Some("Single-bit ECC"));
-        assert_eq!(named(0x01).as_deref(), Some("None"));
-        assert_eq!(named(0x05).as_deref(), Some("Single-bit parity"));
-        // 0x00 is "unknown" and 0x20 is reserved: both say nothing at all,
+        // Table 75, not a recollection of it. These four values are the ones
+        // the invented table got wrong, so they are the ones worth pinning.
+        assert_eq!(named(0x06).as_deref(), Some("Multi-bit ECC"));
+        assert_eq!(named(0x05).as_deref(), Some("Single-bit ECC"));
+        assert_eq!(named(0x03).as_deref(), Some("None"));
+        assert_eq!(named(0x04).as_deref(), Some("Parity"));
+        assert_eq!(named(0x07).as_deref(), Some("CRC"));
+        assert_eq!(named(0x01).as_deref(), Some("Other"));
+        // 0x02 is "Unknown" and 0x20 is reserved: both say nothing at all,
         // rather than the panel printing a confident "None" for a board that
         // never answered the question.
+        assert_eq!(named(0x02), None);
         assert_eq!(named(0x00), None);
         assert_eq!(named(0x20), None);
+
+        // Two arrays that agree collapse to one name (the X99 rig); two that
+        // disagree are both printed rather than arbitrated.
+        let pair = |a: u8, b: u8| {
+            let mk = |code: u8| {
+                let mut b = vec![0u8; 0x13];
+                b[2] = code;
+                smbios_record(16, &b, &[])
+            };
+            let mut blob = mk(a);
+            blob.extend_from_slice(&mk(b));
+            array_error_correction(&smbios_records(&blob))
+        };
+        assert_eq!(pair(0x06, 0x06).as_deref(), Some("Multi-bit ECC"));
+        assert_eq!(pair(0x06, 0x03).as_deref(), Some("Multi-bit ECC / None"));
+        // One array answering and the other not is still an answer, not a tie.
+        assert_eq!(pair(0x06, 0x02).as_deref(), Some("Multi-bit ECC"));
+        assert_eq!(pair(0x02, 0x02), None);
     }
 
     /// Decode one Size field on its own, so the unit convention can be tested

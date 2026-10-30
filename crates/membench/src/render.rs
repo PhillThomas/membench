@@ -474,7 +474,10 @@ pub fn system_panel(sys: &SystemInfo) -> String {
     // off look identical in a row until the array is asked.
     if let Some(corr) = &mem.error_correction {
         if mem.modules.iter().any(|d| d.ecc_bits.unwrap_or(0) > 0) {
-            let claimed = corr.ends_with("ECC") || corr.ends_with("parity");
+            // `contains` because a board whose two arrays disagree joins them
+            // into one value ("Multi-bit ECC / None"), which still says that
+            // something out there is protecting these lines.
+            let claimed = corr.contains("ECC") || corr.contains("Parity") || corr.contains("CRC");
             let note = if claimed {
                 String::new()
             } else {
