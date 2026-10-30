@@ -354,15 +354,28 @@ fn decode_memory_device(r: &SmbiosRecord) -> Option<Dimm> {
     }
 
     // ECC is arithmetic on two widths rather than a flag anyone sets: a module
-    // 72 bits wide behind 64 bits of data is saying it carries eight check
-    // bits. Equal widths are a real answer of their own and stay zero; a width
-    // the firmware did not report is `None`, which is not the same statement
-    // and must not be printed as "no ECC". What the board does with those check
-    // bits is type 16's answer, kept separately for exactly that reason.
-    let data_width = u16(r, 0x0A).filter(|v| *v != 0xFFFF);
-    let total_width = u16(r, 0x08).filter(|v| *v != 0xFFFF);
+    // 72 bits wide behind 64 bits of data is saying it carries eight check bits.
+    // What the board does with those check bits is type 16's answer, kept
+    // separately for exactly that reason.
+    // Zero is filtered alongside 0xFFFF because firmware does write it, and a
+    // width of nothing is a non-answer rather than a narrow bus — and because
+    // `ilog2` below has no answer for zero.
+    let data_width = u16(r, 0x0A).filter(|v| *v != 0 && *v != 0xFFFF);
+    let total_width = u16(r, 0x08).filter(|v| *v != 0 && *v != 0xFFFF);
     let ecc_bits = match (total_width, data_width) {
         (Some(t), Some(d)) if t > d => Some(t - d),
+        // Equal widths is usually "no checking" — and usually 64 over 64, which
+        // stays zero as it should. But there is no such thing as a 72-bit data
+        // path: memory data buses are 8, 16, 32 or 64 bits wide, so firmware
+        // that reports 72 over 72 has written the module's total width into
+        // both fields instead of answering the question. The Xeon rig this
+        // project tests against does exactly that with Samsung ECC RDIMMs, and
+        // the plain subtraction called the machine non-ECC. A width that is not
+        // one of those buses is carrying check bits, and the gap between it and
+        // the widest bus it could have been is how many: 72 means 8, 80 means
+        // 16. `dmidecode` prints these fields as they arrive, 72 and 72, and
+        // agrees that the arithmetic — not the firmware — is what was missing.
+        (Some(t), Some(d)) if t == d && !d.is_power_of_two() => Some(d - (1 << d.ilog2())),
         (Some(_), Some(_)) => Some(0),
         _ => None,
     };
@@ -890,6 +903,17 @@ mod tests {
         // a module with no checking.
         assert_eq!(type17_with_widths(0xFFFF, 64).ecc_bits, None);
         assert_eq!(type17_with_widths(72, 0xFFFF).ecc_bits, None);
+
+        // The Xeon rig's firmware, as `dmidecode` reads it: 72 bits in both
+        // fields. There is no 72-bit data path, so the module is carrying eight
+        // check bits and the subtraction that ignores that called a machine with
+        // eight ECC RDIMMs clean.
+        assert_eq!(type17_with_widths(72, 72).ecc_bits, Some(8));
+        assert_eq!(type17_with_widths(80, 80).ecc_bits, Some(16));
+        // A power of two is a real data path and stays zero, and a zero width is
+        // a non-answer rather than a 0-bit bus (it also has no ilog2).
+        assert_eq!(type17_with_widths(32, 32).ecc_bits, Some(0));
+        assert_eq!(type17_with_widths(0, 0).ecc_bits, None);
     }
 
     #[test]

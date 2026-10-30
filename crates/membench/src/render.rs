@@ -278,6 +278,18 @@ pub fn warnings(warnings: &[Warning]) -> String {
 }
 
 /// The system panel: what `membench info` prints and what the TUI shows below
+/// `RLIMIT_MEMLOCK` as a reader expects it. An unlimited limit comes back from
+/// `getrlimit` as the largest number the type can hold, and handing that to the
+/// byte formatter turned "no limit at all" into "mlock limit 16777216.0T" on
+/// the Xeon rig — which reads like a measurement of something.
+fn mlock_label(limit: Option<u64>) -> String {
+    match limit {
+        Some(u64::MAX) => "unlimited".to_string(),
+        Some(bytes) => human_bytes(bytes),
+        None => "Unknown".to_string(),
+    }
+}
+
 /// the grid.
 pub fn system_panel(sys: &SystemInfo) -> String {
     let mut out = String::new();
@@ -548,10 +560,7 @@ pub fn system_panel(sys: &SystemInfo) -> String {
         } else {
             ""
         },
-        sys.os
-            .mlock_limit_bytes
-            .map(human_bytes)
-            .unwrap_or_else(|| "Unknown".to_string())
+        mlock_label(sys.os.mlock_limit_bytes)
     );
     if !sys.warnings.is_empty() {
         let _ = write!(out, "  {:<11}", "Warnings");
@@ -837,6 +846,13 @@ mod tests {
     /// A module 72 bits wide behind 64 bits of data is an ECC module, and the
     /// array saying "Multi-bit ECC" over the top is the same fact from the
     /// board's side. Both are printed, on separate lines, from separate tables.
+    #[test]
+    fn an_unlimited_mlock_limit_is_not_a_size() {
+        assert_eq!(mlock_label(Some(u64::MAX)), "unlimited");
+        assert_eq!(mlock_label(Some(8 * 1024 * 1024)), "8M");
+        assert_eq!(mlock_label(None), "Unknown");
+    }
+
     #[test]
     fn an_ecc_kit_and_the_array_that_corrects_it_are_both_shown() {
         let sys = SystemInfo {
