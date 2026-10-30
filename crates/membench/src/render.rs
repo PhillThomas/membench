@@ -449,20 +449,25 @@ pub fn system_panel(sys: &SystemInfo) -> String {
         let _ = writeln!(out, "  {:<11}{}  {}{tail}", "", place, f.join("  "));
     }
 
-    // The array's own answer, on its own line, because it is about the board.
-    // It and the modules disagree often enough to be worth the row: ECC
-    // unbuffered modules in a consumer board that will not correct anything, or
-    // a BIOS that reports a 72-bit module as 64-bit. Merging the two into one
-    // verdict would hide the only case a reader needs to see.
+    // The array's own answer, on its own line, because it is about the board and
+    // not about any module. It and the modules disagree often enough to be worth
+    // printing even when they agree: ECC unbuffered modules in a consumer board
+    // that corrects nothing, or a BIOS that reports a 72-bit module as 64-bit.
+    // Merging the two into one verdict would hide the only case a reader needs.
+    // The label says "ECC array" rather than "ECC" because the value underneath
+    // it is a capability the firmware claims for the slots, which on its own is
+    // no evidence that any installed module can honour it.
     if let Some(corr) = &mem.error_correction {
         let claimed = corr.ends_with("ECC") || corr.ends_with("parity");
         let any_bits = mem.modules.iter().any(|d| d.ecc_bits.unwrap_or(0) > 0);
         let note = match (claimed, any_bits) {
-            (true, false) if !mem.modules.is_empty() => ", but no module reports check bits",
-            (false, true) => ", but the modules carry check bits this array does not claim",
+            (true, false) if !mem.modules.is_empty() => {
+                ", which no installed module carries check bits to use"
+            }
+            (false, true) => ", while the modules carry check bits this array does not claim",
             _ => "",
         };
-        let _ = writeln!(out, "  {:<11}{corr}{note}", "ECC");
+        let _ = writeln!(out, "  {:<11}{corr}{note}", "ECC array");
     }
 
     // SPD timings are the module's rated values, never its running values, and
@@ -859,7 +864,7 @@ mod tests {
         assert!(text.contains("ECC 8-bit (72/64)"), "{text}");
         assert!(
             text.lines()
-                .any(|l| l.trim().starts_with("ECC") && l.contains("Multi-bit ECC")),
+                .any(|l| l.trim().starts_with("ECC array") && l.contains("Multi-bit ECC")),
             "{text}"
         );
         assert!(
@@ -877,7 +882,7 @@ mod tests {
         let text = system_panel(&sys);
         assert!(text.contains("ECC 8-bit (72/64)"), "{text}");
         assert!(
-            text.contains("None, but the modules carry check bits this array does not claim"),
+            text.contains("None, while the modules carry check bits this array does not claim"),
             "{text}"
         );
     }
@@ -894,7 +899,7 @@ mod tests {
         let text = system_panel(&sys);
         assert!(text.contains("non-ECC (64/64)"), "{text}");
         assert!(
-            text.contains("Multi-bit ECC, but no module reports check bits"),
+            text.contains("Multi-bit ECC, which no installed module carries check bits to use"),
             "{text}"
         );
     }
