@@ -402,6 +402,19 @@ pub fn system_panel(sys: &SystemInfo) -> String {
         if let Some(kind) = &d.device_type {
             f.push(kind.clone());
         }
+        // The check bits the module reports in its own widths. Nothing here is
+        // looked up: 72 over 64 is an ECC module because the extra eight bits
+        // go nowhere else, and a module that says 64 over 64 is told the same
+        // thing in the other direction rather than left ambiguous.
+        match (d.ecc_bits, d.total_width_bits, d.data_width_bits) {
+            (Some(bits), Some(total), Some(data)) if bits > 0 => {
+                f.push(format!("ECC {bits}-bit ({total}/{data})"));
+            }
+            (Some(0), Some(total), Some(data)) => {
+                f.push(format!("non-ECC ({total}/{data})"));
+            }
+            _ => {}
+        }
         match (d.max_speed_mts, d.configured_speed_mts) {
             // Rated and running speed differ whenever the machine is not
             // running the modules at their rated bin; both are worth seeing.
@@ -434,6 +447,22 @@ pub fn system_panel(sys: &SystemInfo) -> String {
             Some(_) => String::new(),
         };
         let _ = writeln!(out, "  {:<11}{}  {}{tail}", "", place, f.join("  "));
+    }
+
+    // The array's own answer, on its own line, because it is about the board.
+    // It and the modules disagree often enough to be worth the row: ECC
+    // unbuffered modules in a consumer board that will not correct anything, or
+    // a BIOS that reports a 72-bit module as 64-bit. Merging the two into one
+    // verdict would hide the only case a reader needs to see.
+    if let Some(corr) = &mem.error_correction {
+        let claimed = corr.ends_with("ECC") || corr.ends_with("parity");
+        let any_bits = mem.modules.iter().any(|d| d.ecc_bits.unwrap_or(0) > 0);
+        let note = match (claimed, any_bits) {
+            (true, false) if !mem.modules.is_empty() => ", but no module reports check bits",
+            (false, true) => ", but the modules carry check bits this array does not claim",
+            _ => "",
+        };
+        let _ = writeln!(out, "  {:<11}{corr}{note}", "ECC");
     }
 
     // SPD timings are the module's rated values, never its running values, and
@@ -759,6 +788,9 @@ mod tests {
                         max_speed_mts: Some(2133),
                         configured_speed_mts: Some(1866),
                         part_number: Some("CMK32GX4M2A2133C13".into()),
+                        data_width_bits: Some(64),
+                        total_width_bits: Some(64),
+                        ecc_bits: Some(0),
                         // His firmware's literal answer for "no string".
                         manufacturer: Some("Unknown".into()),
                         source: "SMBIOS type 17".into(),
@@ -793,6 +825,103 @@ mod tests {
         assert!(!text.contains("by Unknown"), "placeholder leaked:\n{text}");
         // The source is stated once for a list that shares it, not per row.
         assert_eq!(text.matches("(from SMBIOS type 17)").count(), 1, "{text}");
+    }
+
+    /// A module 72 bits wide behind 64 bits of data is an ECC module, and the
+    /// array saying "Multi-bit ECC" over the top is the same fact from the
+    /// board's side. Both are printed, on separate lines, from separate tables.
+    #[test]
+    fn an_ecc_kit_and_the_array_that_corrects_it_are_both_shown() {
+        let sys = SystemInfo {
+            memory: MemoryInfo {
+                total_bytes: Some(64 << 30),
+                mem_type: Some("DDR4".into()),
+                populated_modules: Some(1),
+                error_correction: Some("Multi-bit ECC".into()),
+                modules: vec![Dimm {
+                    slot: Some("DIMM A1".into()),
+                    bank: Some("NODE 0 CHANNEL A".into()),
+                    size_bytes: Some(16 << 30),
+                    device_type: Some("DDR4 (registered)".into()),
+                    max_speed_mts: Some(2666),
+                    part_number: Some("M393A2K40BB2-CTD".into()),
+                    data_width_bits: Some(64),
+                    total_width_bits: Some(72),
+                    ecc_bits: Some(8),
+                    source: "SMBIOS type 17".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let text = system_panel(&sys);
+        assert!(text.contains("ECC 8-bit (72/64)"), "{text}");
+        assert!(
+            text.lines()
+                .any(|l| l.trim().starts_with("ECC") && l.contains("Multi-bit ECC")),
+            "{text}"
+        );
+        assert!(
+            !text.contains("but"),
+            "agreement must not read as a clash:\n{text}"
+        );
+    }
+
+    #[test]
+    fn ecc_modules_in_a_board_that_will_not_correct_them_are_shown_as_that() {
+        // The interesting case, and the common one on consumer boards: the
+        // modules carry the extra devices, the array corrects nothing. A single
+        // merged verdict would have to pick one of the two and be wrong.
+        let sys = ecc_fixture("None");
+        let text = system_panel(&sys);
+        assert!(text.contains("ECC 8-bit (72/64)"), "{text}");
+        assert!(
+            text.contains("None, but the modules carry check bits this array does not claim"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_array_claiming_ecc_over_modules_with_no_check_bits_says_both() {
+        let sys = ecc_fixture("Multi-bit ECC");
+        let mut sys = sys;
+        if let Some(d) = sys.memory.modules.first_mut() {
+            d.total_width_bits = Some(64);
+            d.data_width_bits = Some(64);
+            d.ecc_bits = Some(0);
+        }
+        let text = system_panel(&sys);
+        assert!(text.contains("non-ECC (64/64)"), "{text}");
+        assert!(
+            text.contains("Multi-bit ECC, but no module reports check bits"),
+            "{text}"
+        );
+    }
+
+    /// One server module, so the two disagreement tests differ only in what the
+    /// array claims.
+    fn ecc_fixture(correction: &str) -> SystemInfo {
+        SystemInfo {
+            memory: MemoryInfo {
+                total_bytes: Some(16 << 30),
+                mem_type: Some("DDR4".into()),
+                populated_modules: Some(1),
+                error_correction: Some(correction.into()),
+                modules: vec![Dimm {
+                    slot: Some("DIMM A1".into()),
+                    size_bytes: Some(16 << 30),
+                    device_type: Some("DDR4 (unbuffered)".into()),
+                    data_width_bits: Some(64),
+                    total_width_bits: Some(72),
+                    ecc_bits: Some(8),
+                    source: "SMBIOS type 17".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 
     #[test]

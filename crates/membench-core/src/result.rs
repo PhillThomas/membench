@@ -632,6 +632,10 @@ pub struct Dimm {
     pub serial: Option<String>,
     pub data_width_bits: Option<u32>,
     pub total_width_bits: Option<u32>,
+    /// Check bits beyond the data path: total width minus data width, when the
+    /// firmware reported both. Eight on a 72-bit ECC module. `None` means the
+    /// widths were not reported, which is not the same answer as zero.
+    pub ecc_bits: Option<u32>,
     pub ranks: Option<u32>,
     /// Where this row came from, so the panel can be honest about it.
     pub source: String,
@@ -678,6 +682,11 @@ pub struct MemoryInfo {
     pub channels_note: Option<String>,
     pub modules: Vec<Dimm>,
     pub populated_modules: Option<usize>,
+    /// What the physical memory array says about error correction, from
+    /// SMBIOS type 16. A claim about the board, not about any module: an array
+    /// can say `None` while its modules carry check bits, and printing one
+    /// merged verdict would hide the only interesting case.
+    pub error_correction: Option<String>,
     pub spd: Vec<SpdTimings>,
     pub transparent_hugepages: Option<String>,
     pub numa_node_count: usize,

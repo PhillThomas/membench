@@ -27,8 +27,10 @@ pub fn detect(_cpu: &CpuInfo) -> MemoryInfo {
         ..Default::default()
     };
 
-    let (modules, note) = smbios_type17();
-    info.modules = modules;
+    let smb = smbios_tables();
+    info.error_correction = smb.error_correction;
+    info.modules = smb.modules;
+    let note = smb.note;
     if info.modules.is_empty() {
         info.modules = edac_modules();
     }
@@ -169,15 +171,26 @@ fn smbios_records(blob: &[u8]) -> Vec<SmbiosRecord> {
     out
 }
 
-/// `None` = could not read the tables. The reason differs for root and non-root
-/// and the panel must say which, because "run with sudo" is bad advice when the
-/// kernel blocked root too.
-fn smbios_type17() -> (Vec<Dimm>, Option<String>) {
+/// What one read of the SMBIOS tables is worth.
+struct Smbios {
+    modules: Vec<Dimm>,
+    /// `None` = the tables were read. A failure's reason differs for root and
+    /// non-root and the panel must say which, because "run with sudo" is bad
+    /// advice when the kernel blocked root too.
+    note: Option<String>,
+    /// Type 16's answer for the physical memory array: what the board does
+    /// about bad bits. That is a property of the machine rather than of any one
+    /// module, so it sits beside the machine instead of inside a row.
+    error_correction: Option<String>,
+}
+
+fn smbios_tables() -> Smbios {
     if !exists(DMI_PATH) {
-        return (
-            Vec::new(),
-            Some("no SMBIOS access: this kernel exposes no DMI tables".into()),
-        );
+        return Smbios {
+            modules: Vec::new(),
+            note: Some("no SMBIOS access: this kernel exposes no DMI tables".into()),
+            error_correction: None,
+        };
     }
     let blob = match read_bytes(DMI_PATH, 1 << 20) {
         Some(b) => b,
@@ -188,19 +201,28 @@ fn smbios_type17() -> (Vec<Dimm>, Option<String>) {
             } else {
                 "run with sudo for DIMM details (SMBIOS tables are root-only)"
             };
-            return (Vec::new(), Some(note.to_string()));
+            return Smbios {
+                modules: Vec::new(),
+                note: Some(note.to_string()),
+                error_correction: None,
+            };
         }
     };
     let records = smbios_records(&blob);
     if records.is_empty() {
-        return (
-            Vec::new(),
-            Some(format!(
+        return Smbios {
+            modules: Vec::new(),
+            note: Some(format!(
                 "SMBIOS blob is readable ({} bytes) but carries no entry point anchor, so the                  structures could not be located",
                 blob.len()
             )),
-        );
+            error_correction: None,
+        };
     }
+
+    // The array is asked first because it answers even when no module does.
+    let error_correction = array_error_correction(&records);
+
     let mut out = Vec::new();
     let mut type17 = 0usize;
     for r in records.iter().filter(|r| r.ty == 17) {
@@ -213,16 +235,47 @@ fn smbios_type17() -> (Vec<Dimm>, Option<String>) {
         // Counts rather than a verdict: whether this is firmware that never
         // fills the table or a machine whose slots really are empty is the
         // reader's call, and the numbers are what makes it.
-        return (
-            Vec::new(),
-            Some(format!(
+        return Smbios {
+            modules: Vec::new(),
+            note: Some(format!(
                 "SMBIOS parsed {} structures, {} of them memory devices (type 17), none                  reporting a size — either the firmware leaves them unpopulated or every slot                  is empty",
                 records.len(),
                 type17
             )),
-        );
+            error_correction,
+        };
     }
-    (out, None)
+    Smbios {
+        modules: out,
+        note: None,
+        error_correction,
+    }
+}
+
+/// DSP0134 Table 43 (Memory Error Correction Method). The three "None" codes
+/// are a definite answer and are kept as one, because "this array corrects
+/// nothing" is information. Reserved and unknown codes return `None` so the
+/// panel says nothing rather than guessing at a value the firmware invented.
+fn error_correction_name(v: u32) -> Option<String> {
+    match v {
+        0x01 | 0x04 | 0x07 => Some("None".into()),
+        0x02 => Some("Single-bit ECC".into()),
+        0x03 => Some("Multi-bit ECC".into()),
+        0x05 => Some("Single-bit parity".into()),
+        0x06 => Some("Multi-bit parity".into()),
+        _ => None,
+    }
+}
+
+/// Type 16, first record, offset 0x06. Most boards have one array; a machine
+/// with several that disagree would need one line per array, and no firmware
+/// seen here does that, so the first answer is printed rather than a merged one.
+fn array_error_correction(records: &[SmbiosRecord]) -> Option<String> {
+    records
+        .iter()
+        .find(|r| r.ty == 16)
+        .and_then(|r| byte(r, 0x06))
+        .and_then(error_correction_name)
 }
 
 fn u16(r: &SmbiosRecord, off: usize) -> Option<u32> {
@@ -300,6 +353,20 @@ fn decode_memory_device(r: &SmbiosRecord) -> Option<Dimm> {
         device_type = format!("{device_type} (unbuffered)");
     }
 
+    // ECC is arithmetic on two widths rather than a flag anyone sets: a module
+    // 72 bits wide behind 64 bits of data is saying it carries eight check
+    // bits. Equal widths are a real answer of their own and stay zero; a width
+    // the firmware did not report is `None`, which is not the same statement
+    // and must not be printed as "no ECC". What the board does with those check
+    // bits is type 16's answer, kept separately for exactly that reason.
+    let data_width = u16(r, 0x0A).filter(|v| *v != 0xFFFF);
+    let total_width = u16(r, 0x08).filter(|v| *v != 0xFFFF);
+    let ecc_bits = match (total_width, data_width) {
+        (Some(t), Some(d)) if t > d => Some(t - d),
+        (Some(_), Some(_)) => Some(0),
+        _ => None,
+    };
+
     Some(Dimm {
         slot: string(r, 0x10),
         bank: string(r, 0x11),
@@ -311,8 +378,9 @@ fn decode_memory_device(r: &SmbiosRecord) -> Option<Dimm> {
         part_number: string(r, 0x1A),
         manufacturer: string(r, 0x17),
         serial: string(r, 0x18),
-        data_width_bits: u16(r, 0x0A).filter(|v| *v != 0xFFFF),
-        total_width_bits: u16(r, 0x08).filter(|v| *v != 0xFFFF),
+        data_width_bits: data_width,
+        total_width_bits: total_width,
+        ecc_bits,
         // Attributes byte, bits 3-0 = rank number, 0 = unknown.
         ranks: byte(r, 0x1B).map(|v| v & 0x0F).filter(|v| *v != 0),
         source: "SMBIOS type 17".to_string(),
@@ -794,6 +862,53 @@ mod tests {
         assert_eq!(d.data_width_bits, Some(160));
         assert_eq!(d.ranks, Some(1));
         assert_eq!(d.source, "SMBIOS type 17");
+        // 192 bits of module behind 160 bits of data: 32 bits of checking, by
+        // subtraction, which is all any decoder can honestly say.
+        assert_eq!(d.ecc_bits, Some(32));
+    }
+
+    /// The same record with different widths, so the arithmetic that calls a
+    /// module ECC is tested rather than asserted in a comment.
+    fn type17_with_widths(total: u16, data: u16) -> Dimm {
+        let mut body = type17_body(8192);
+        body[4..6].copy_from_slice(&total.to_le_bytes()); // 0x08 total width
+        body[6..8].copy_from_slice(&data.to_le_bytes()); // 0x0A data width
+        let blob = smbios_record(17, &body, &["Bank 0", "DIMM_A1", "PART"]);
+        let records = smbios_records(&blob);
+        decode_memory_device(&records[0]).expect("decode")
+    }
+
+    #[test]
+    fn check_bits_are_the_difference_between_the_two_widths() {
+        // 72 over 64 is the ordinary ECC module; 80 over 72 is what a wide
+        // server rank reports for the same eight bits of checking.
+        assert_eq!(type17_with_widths(72, 64).ecc_bits, Some(8));
+        assert_eq!(type17_with_widths(80, 72).ecc_bits, Some(8));
+        // Equal widths is a reported answer, not an absence of one.
+        assert_eq!(type17_with_widths(64, 64).ecc_bits, Some(0));
+        // 0xFFFF means the firmware could not say, which must not be read as
+        // a module with no checking.
+        assert_eq!(type17_with_widths(0xFFFF, 64).ecc_bits, None);
+        assert_eq!(type17_with_widths(72, 0xFFFF).ecc_bits, None);
+    }
+
+    #[test]
+    fn the_array_names_its_correction_and_refuses_to_guess() {
+        let record = |code: u8| {
+            let mut b = vec![0u8; 0x13];
+            b[2] = code; // offset 0x06 in the record is two bytes into the body
+            smbios_records(&smbios_record(16, &b, &[]))
+        };
+        let named = |code: u8| array_error_correction(&record(code));
+        assert_eq!(named(0x03).as_deref(), Some("Multi-bit ECC"));
+        assert_eq!(named(0x02).as_deref(), Some("Single-bit ECC"));
+        assert_eq!(named(0x01).as_deref(), Some("None"));
+        assert_eq!(named(0x05).as_deref(), Some("Single-bit parity"));
+        // 0x00 is "unknown" and 0x20 is reserved: both say nothing at all,
+        // rather than the panel printing a confident "None" for a board that
+        // never answered the question.
+        assert_eq!(named(0x00), None);
+        assert_eq!(named(0x20), None);
     }
 
     /// Decode one Size field on its own, so the unit convention can be tested
