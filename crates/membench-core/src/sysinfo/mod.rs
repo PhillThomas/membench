@@ -211,7 +211,12 @@ pub fn gather() -> SystemInfo {
     let cpu = cpu::detect();
     let caches = cache::detect();
     let (cores, topology) = topology::detect(&caches);
-    let memory = dimm::detect(&cpu);
+    let mut memory = dimm::detect(&cpu);
+    // The panel prints this field, so it has to come from the detection that
+    // exists. It was declared and printed but never assigned, which made a
+    // single-node machine report "0 node(s)" — a number no Linux box has, and
+    // the one place where the panel contradicted the NUMA warning below it.
+    memory.numa_node_count = topology.numa_nodes.len();
     let mut warnings = governor::warnings(&cores, &topology);
 
     if let Some(total) = total_ram_bytes() {
@@ -391,6 +396,17 @@ mod tests {
         // PLAN.md: missing sources give Unknown, never a panic — so gather()
         // returning at all is the assertion. Spot-check the panel builder too.
         let _ = cache_summary(&sys.caches);
+        // ...but a field the panel *prints* must be filled by the detection that
+        // exists. `numa_node_count` was declared, printed, and never assigned, so
+        // a one-node machine printed "0 node(s)" — a state Linux does not have —
+        // while the warning path underneath it counted nodes correctly.
+        // Asserted as a wiring, not as ">= 1", because a sandbox without /sys is
+        // allowed to detect nothing at all.
+        assert_eq!(
+            sys.memory.numa_node_count,
+            sys.topology.numa_nodes.len(),
+            "numa_node_count is not wired to the topology it prints"
+        );
     }
 
     #[test]
