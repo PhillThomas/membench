@@ -540,11 +540,50 @@ mod tests {
 
     #[test]
     fn memory_cell_grows_with_big_l3() {
-        // 256M of L3: 16 × 256M = 4 GiB beats the 1 GiB floor.
+        // 256M of L3: 16 × 256M = 4 GiB beats the 1 GiB floor. Asserted against
+        // the row's own rule rather than a fixed number of gigabytes, because
+        // memory() clamps the target to half of the RAM that is actually free and
+        // a CI runner with a couple of GiB free cannot reach 4 GiB. That clamp has
+        // been firing as a test failure on every CI run since this line was
+        // written: a limit of the machine reported as a fault in the code, which is
+        // the same mistake as asserting a measured clock on a shared VM.
         let sys = fixture(48 * 1024, 2 * 1024 * 1024, 256 * 1024 * 1024, 16, 2);
         let mem = for_level(&sys, &settings(16), Level::Memory).unwrap();
-        assert!(mem.bytes_per_thread * mem.threads >= 4 * 1024 * 1024 * 1024);
+        let total = mem.bytes_per_thread * mem.threads;
+        let clamped = mem.derivation.contains("clamped");
+        assert!(
+            total >= 4 * 1024 * 1024 * 1024 || clamped,
+            "{total} bytes and the plan does not say why: {}",
+            mem.derivation
+        );
+        // Unclamped, the big L3 has to move the row off its floor.
+        assert!(
+            total >= MIN_MEMORY_TOTAL_BYTES || clamped,
+            "the 256M L3 did not move the row off its floor: {}",
+            mem.derivation
+        );
         assert!(mem.derivation.contains("total L3"), "{}", mem.derivation);
+    }
+
+    #[test]
+    fn an_unaffordable_memory_row_says_so_instead_of_lying() {
+        // 16 GiB of L3 makes the row want 256 GiB, which no machine that exists
+        // can hand to a benchmark. The clamp fires on every host, so it can be
+        // asserted on every host — and it has to be, because "clamped" is the
+        // phrase `memory_cell_grows_with_big_l3` accepts as an excuse. An escape
+        // hatch nobody tests is a test that fails again the next time the wording
+        // drifts.
+        let sys = fixture(48 * 1024, 2 * 1024 * 1024, 16 * 1024 * 1024 * 1024, 16, 2);
+        let mem = for_level(&sys, &settings(16), Level::Memory).unwrap();
+        assert!(
+            mem.derivation.contains("clamped"),
+            "the plan did not admit it could not afford the row: {}",
+            mem.derivation
+        );
+        assert!(
+            (mem.bytes_per_thread as u128) * (mem.threads as u128) < 256 * 1024 * 1024 * 1024,
+            "the row was not clamped to what the machine can hold"
+        );
     }
 
     #[test]
