@@ -19,6 +19,15 @@ fail() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 step "toolchain"
 rustc --version
 cargo --version
+# Name a missing tool as the environment problem it is. On the DDR5 test box
+# python3 was not installed, and everything the run said about the contract
+# check was "the JSON document is not what the contract says": a red light
+# blaming the code for a missing package, and an hour spent reading JSON that
+# was never the problem. `--quick` stops before these steps, so it must not
+# demand python3 it will never use.
+if [[ -z "$QUICK" ]] && ! command -v python3 >/dev/null 2>&1; then
+    fail "python3 is not installed, and the JSON contract and TUI steps need it"
+fi
 
 step "format"
 cargo fmt --all --check || fail "cargo fmt --all would change files"
@@ -62,6 +71,9 @@ $BIN run --no-tui --trials 2 --duration-ms 50 --level l1,l2 --only read,latency 
 # check cannot quietly fall behind a deliberate bump.
 SCHEMA=$(sed -n 's/^pub const SCHEMA_VERSION: u32 = \(.*\);$/\1/p' \
     crates/membench-core/src/lib.rs)
+# The same failure mode one step down: an empty SCHEMA arrives in python as
+# int("") and comes out of the except clause as a contract violation.
+[[ -n "$SCHEMA" ]] || fail "SCHEMA_VERSION no longer parses out of lib.rs — update this script"
 python3 - "$JSON" "$SCHEMA" <<'PY' || fail "the JSON document is not what the contract says"
 import json, math, sys
 doc = json.load(open(sys.argv[1]))
