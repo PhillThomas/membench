@@ -210,7 +210,28 @@ impl Runner {
                 }
                 let headline = is_headline(&self.settings, level, op);
                 let cell = if op == Op::Latency {
-                    let size = plan.bytes_per_thread.max(8 * 1024);
+                    // One thread, so this cell uses the chase the planner sized
+                    // for one thread. `bytes_per_thread` belongs to the bandwidth
+                    // row, which divides it across the bandwidth threads; on a
+                    // chip with a big L3 that leaves a lone chase inside the
+                    // cache it was meant to escape. See `sizes::latency_chase`.
+                    let size = plan.latency_bytes_per_thread.max(8 * 1024);
+                    let need = plan.cache_bytes.unwrap_or(0) * sizes::MIN_MEMORY_L3_MULTIPLE;
+                    if level == Level::Memory && need > 0 && (size as u64) < need {
+                        results.warnings.push(
+                            Warning::new(
+                                "sizing",
+                                format!(
+                                    "the {} latency chase is {}, under {} of total L3, so this \
+                                     figure may be partly cache-resident",
+                                    level.grid_label(),
+                                    sysinfo::human_bytes(size as u64),
+                                    sysinfo::human_bytes(need)
+                                ),
+                            )
+                            .with_hint("free more RAM, or read the figure as a lower bound"),
+                        );
+                    }
                     if let Some(tx) = &events {
                         let _ = tx.send(Event::CellStart {
                             level,
@@ -439,6 +460,7 @@ mod tests {
             threads: 2,
             cpus: vec![0, 1],
             bytes_per_thread: 4096,
+            latency_bytes_per_thread: 4096,
             buffers_per_thread: 1,
             total_bytes: 8192,
             cache_bytes: None,

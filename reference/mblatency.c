@@ -47,6 +47,10 @@
 #define MAX_SIZES 64
 #define MAX_TRIALS 64
 #define DEFAULT_LINE 64
+/* A memory point has to be this many times the whole L3 before its nanoseconds
+ * are DRAM's. Mirrors membench's sizes.rs::MIN_MEMORY_L3_MULTIPLE; see the use
+ * site in auto_sizes() for why this tool needs it on a single thread. */
+#define MIN_MEM_LATENCY_L3_MULTIPLE 4ull
 
 /* Latency windows are capped: a 1 GiB chain pass is already slow, and the
  * point is nanoseconds per load, not wall-clock endurance. */
@@ -628,6 +632,19 @@ static int auto_sizes(const Machine *m, Point *pts, int max)
             total = avail / 2;
         want[n].label = "memory";
         want[n].bytes = (size_t)(total / (unsigned long long)threads);
+        /* mblatency chases on ONE pinned cpu, so it cannot borrow footprint from
+         * the threads that total was divided by. On a 96 MB L3 with 16 logical
+         * CPUs the division lands the chase exactly *inside* the cache and the
+         * cell reports L3 hits as DRAM latency — measured here at 19.9 ns where
+         * one size step up measured 71.6 ns. Floor it at the same multiple of
+         * total L3 that membench's sizes.rs::latency_chase uses, if the machine
+         * can afford it. */
+        if (m->l3 > 0) {
+            unsigned long long need =
+                MIN_MEM_LATENCY_L3_MULTIPLE * (unsigned long long)m->l3;
+            if ((unsigned long long)want[n].bytes < need && (!avail || need <= avail / 2))
+                want[n].bytes = (size_t)need;
+        }
         if (want[n].bytes < 8192)
             want[n].bytes = 8192;
         n++;
