@@ -70,9 +70,20 @@ AARCH64_LINKER="aarch64-linux-gnu-gcc"
 missing=""
 if ! command -v "$AARCH64_LINKER" >/dev/null 2>&1; then
     missing="$AARCH64_LINKER"
-elif ! command -v rustup >/dev/null 2>&1 \
-    || ! rustup target list --installed 2>/dev/null | grep -qx "$AARCH64_TARGET"; then
-    missing="the $AARCH64_TARGET rustup target"
+else
+    # A cross compiler without the target's libc startup objects cannot link
+    # anything, and libc6-dev-arm64-cross is only a *Recommends* of
+    # gcc-aarch64-linux-gnu — so "the tool is installed" is not the
+    # precondition, and CI found that out by failing. Name the absent half
+    # instead of reporting a broken build, which would send someone looking in
+    # the wrong file.
+    AARCH64_SYSROOT="/usr/$("$AARCH64_LINKER" -dumpmachine 2>/dev/null)"
+    if [[ ! -f "$AARCH64_SYSROOT/lib/Scrt1.o" ]]; then
+        missing="$AARCH64_LINKER with no target libc under $AARCH64_SYSROOT/lib"
+    elif ! command -v rustup >/dev/null 2>&1 \
+        || ! rustup target list --installed 2>/dev/null | grep -qx "$AARCH64_TARGET"; then
+        missing="the $AARCH64_TARGET rustup target"
+    fi
 fi
 if [[ -n "$missing" ]]; then
     if [[ -n "${REQUIRE_AARCH64:-}" ]]; then
