@@ -113,6 +113,15 @@ pub fn measure_core_clock(target: Duration) -> Result<ClockMeasurement> {
 
 /// TSC rate, as a cross-check on [`measure_core_clock`]. `None` where the TSC
 /// is unavailable or unusable.
+///
+/// x86-64 only, and not made portable on purpose. AArch64 does have a counter
+/// userspace can read (`CNTVCT_EL0`, confirmed readable from EL0 at 25 MHz on an
+/// Ampere Altra), but it ticks at the generic-timer rate rather than the core
+/// rate: it is a time base, not a core-clock proxy. Using it as a cross-check
+/// means timing the add chain against the counter instead of against two rate
+/// estimates, which is a different measurement wearing this function's name —
+/// so it is not smuggled in behind it.
+#[cfg(target_arch = "x86_64")]
 pub fn measure_tsc_hz(target: Duration) -> Option<f64> {
     if !kernels::tsc_available() {
         return None;

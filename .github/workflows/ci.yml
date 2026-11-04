@@ -12,12 +12,17 @@ jobs:
   # scripts/ci.sh means a green badge and a green laptop mean the same thing.
   check:
     runs-on: ubuntu-24.04
+    env:
+      # ci.sh treats a missing aarch64 target as a local skip; here it is a
+      # failure, so a broken toolchain cannot read as a green check.
+      REQUIRE_AARCH64: "1"
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: aarch64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
 

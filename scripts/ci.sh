@@ -52,6 +52,27 @@ cargo test --release --workspace -- --test-threads=1
 step "kernels are still our own assembly"
 ./scripts/check-kernels-asm.sh
 
+step "cross-check: the aarch64 build compiles"
+# The NEON kernels cannot be executed on an x86-64 box, so a compiler is the
+# only cheap thing standing between them and rot. That bar was not met: four
+# kernels ended in `mov {out}, ...` against an operand list that never declared
+# `out`, so membench-core did not build for aarch64 at all — and nothing noticed
+# for as long as the project existed, because nothing built it. The README
+# promises "any x86-64 or aarch64 Linux", so the promise gets a check.
+#
+# A missing target is a skip locally and a failure in CI (REQUIRE_AARCH64), so
+# that a broken toolchain cannot read as a pass here either.
+if command -v rustup >/dev/null 2>&1 \
+    && rustup target list --installed 2>/dev/null | grep -qx 'aarch64-unknown-linux-gnu'; then
+    cargo check --workspace --all-targets --target aarch64-unknown-linux-gnu \
+        || fail "the aarch64 build is broken, and the README promises aarch64 Linux"
+elif [[ -n "${REQUIRE_AARCH64:-}" ]]; then
+    fail "REQUIRE_AARCH64 is set but the aarch64 target is not installed (rustup target add)"
+else
+    printf 'rustup target aarch64-unknown-linux-gnu not installed here: skipping.\n'
+    printf 'CI installs it, so this skip is local-only.\n'
+fi
+
 if [[ -n "$QUICK" ]]; then
     printf '\n--quick: stopping before anything that measures the machine\n'
     exit 0

@@ -4,8 +4,12 @@
 //! checksum convention as the x86 paths: XOR of every 8-byte word, so the
 //! cross-ISA checksum tests compare apples with apples.
 //!
-//! This path is compiled for aarch64 only; it is reviewed rather than measured
-//! on the x86-64 development box, so the README says so.
+//! This path is compiled for aarch64 only. It cannot be measured on the x86-64
+//! development box at all, so it is checked two ways instead: `cargo check
+//! --target aarch64-unknown-linux-gnu` runs in CI (a previous version of this
+//! file did not compile, and nothing noticed because nothing built it), and the
+//! kernels are compared against the scalar reference by `membench self-test` on
+//! real aarch64 hardware.
 
 use core::arch::asm;
 
@@ -169,7 +173,7 @@ pub unsafe fn write(dst: *mut u8, len: usize, reps: usize, pattern: u64) -> u64 
             "subs   x2, x2, #1",
             "b.ne   4b",
             "9:",
-            "mov    {out}, x4",
+            "mov    x8, x4",
             in("x0") dst,
             in("x1") len,
             in("x2") reps,
@@ -234,7 +238,7 @@ pub unsafe fn write_nt(dst: *mut u8, len: usize, reps: usize, pattern: u64) -> u
             "b.ne   4b",
             "9:",
             "dsb    ishst",
-            "mov    {out}, x4",
+            "mov    x8, x4",
             in("x0") dst,
             in("x1") len,
             in("x2") reps,
@@ -306,7 +310,7 @@ pub unsafe fn copy(src: *const u8, dst: *mut u8, len: usize, reps: usize) -> u64
             "subs   x3, x3, #1",
             "b.ne   4b",
             "9:",
-            "mov    {out}, xzr",
+            "mov    x8, xzr",
             in("x0") src,
             in("x1") dst,
             in("x2") len,
@@ -381,7 +385,7 @@ pub unsafe fn copy_nt(src: *const u8, dst: *mut u8, len: usize, reps: usize) -> 
             "b.ne   4b",
             "9:",
             "dsb    ishst",
-            "mov    {out}, xzr",
+            "mov    x8, xzr",
             in("x0") src,
             in("x1") dst,
             in("x2") len,
