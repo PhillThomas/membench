@@ -52,6 +52,53 @@ cargo test --release --workspace -- --test-threads=1
 step "kernels are still our own assembly"
 ./scripts/check-kernels-asm.sh
 
+step "cross-check: the aarch64 build assembles"
+# The NEON kernels cannot be executed on an x86-64 box, so a compiler is the
+# only cheap thing standing between them and rot. That bar was not met:
+# membench-core had never compiled for aarch64 at all, and nothing noticed for
+# as long as the project existed because nothing built it. The README promises
+# "any x86-64 or aarch64 Linux", so the promise gets a check.
+#
+# This BUILDS rather than CHECKS, and that distinction is load-bearing:
+# `cargo check --target aarch64-unknown-linux-gnu` passed a file containing
+# `ld1 {v9.16b}, [x3, #16]`, an instruction that does not exist. Inline asm is
+# opaque to type checking and only parsed by LLVM at codegen, so a check-only
+# gate approves assembly the assembler refuses. Linking the target also needs
+# the cross gcc, so both are preconditions rather than assumptions.
+AARCH64_TARGET="aarch64-unknown-linux-gnu"
+AARCH64_LINKER="aarch64-linux-gnu-gcc"
+missing=""
+if ! command -v "$AARCH64_LINKER" >/dev/null 2>&1; then
+    missing="$AARCH64_LINKER"
+else
+    # A cross compiler without the target's libc startup objects cannot link
+    # anything, and libc6-dev-arm64-cross is only a *Recommends* of
+    # gcc-aarch64-linux-gnu — so "the tool is installed" is not the
+    # precondition, and CI found that out by failing. Name the absent half
+    # instead of reporting a broken build, which would send someone looking in
+    # the wrong file.
+    AARCH64_SYSROOT="/usr/$("$AARCH64_LINKER" -dumpmachine 2>/dev/null)"
+    if [[ ! -f "$AARCH64_SYSROOT/lib/Scrt1.o" ]]; then
+        missing="$AARCH64_LINKER with no target libc under $AARCH64_SYSROOT/lib"
+    elif ! command -v rustup >/dev/null 2>&1 \
+        || ! rustup target list --installed 2>/dev/null | grep -qx "$AARCH64_TARGET"; then
+        missing="the $AARCH64_TARGET rustup target"
+    fi
+fi
+if [[ -n "$missing" ]]; then
+    if [[ -n "${REQUIRE_AARCH64:-}" ]]; then
+        fail "REQUIRE_AARCH64 is set, but this runner lacks $missing"
+    fi
+    printf 'no %s here: skipping. CI installs both, so this skip is local-only.\n' "$missing"
+else
+    # Cross-linking needs the cross gcc named as the linker: cargo reaches for
+    # the host `cc` otherwise, and an x86 linker cannot be handed the AArch64
+    #-only `--fix-cortex-a53-843419` flag that rustc passes by default.
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$AARCH64_LINKER" \
+        cargo build --target "$AARCH64_TARGET" \
+        || fail "the aarch64 build is broken, and the README promises aarch64 Linux"
+fi
+
 if [[ -n "$QUICK" ]]; then
     printf '\n--quick: stopping before anything that measures the machine\n'
     exit 0
