@@ -582,6 +582,7 @@ mod tests {
                 .copied()
                 .collect(),
             bytes_per_thread: bytes,
+            latency_bytes_per_thread: bytes,
             buffers_per_thread: 1,
             total_bytes: bytes * threads,
             cache_bytes: None,
@@ -665,6 +666,7 @@ mod tests {
             threads: 2,
             cpus: vec![0, 1],
             bytes_per_thread: 1000,
+            latency_bytes_per_thread: 1000,
             buffers_per_thread: 1,
             total_bytes: 2000,
             cache_bytes: None,
