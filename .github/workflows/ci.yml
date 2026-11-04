@@ -26,6 +26,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # ci.sh cross-BUILDS the aarch64 target. Linking it needs the cross gcc,
+      # and building rather than checking is the point: `cargo check` approved
+      # inline assembly the assembler rejects, because asm is only parsed at
+      # codegen.
+      - name: aarch64 cross toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+
       # Everything short of measuring: formatting, lints, tests and the
       # assembly gate. The runner is a shared VM, so its numbers are not worth
       # asserting on; the steps that touch the machine are marked below.

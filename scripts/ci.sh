@@ -52,25 +52,40 @@ cargo test --release --workspace -- --test-threads=1
 step "kernels are still our own assembly"
 ./scripts/check-kernels-asm.sh
 
-step "cross-check: the aarch64 build compiles"
+step "cross-check: the aarch64 build assembles"
 # The NEON kernels cannot be executed on an x86-64 box, so a compiler is the
-# only cheap thing standing between them and rot. That bar was not met: four
-# kernels ended in `mov {out}, ...` against an operand list that never declared
-# `out`, so membench-core did not build for aarch64 at all — and nothing noticed
-# for as long as the project existed, because nothing built it. The README
-# promises "any x86-64 or aarch64 Linux", so the promise gets a check.
+# only cheap thing standing between them and rot. That bar was not met:
+# membench-core had never compiled for aarch64 at all, and nothing noticed for
+# as long as the project existed because nothing built it. The README promises
+# "any x86-64 or aarch64 Linux", so the promise gets a check.
 #
-# A missing target is a skip locally and a failure in CI (REQUIRE_AARCH64), so
-# that a broken toolchain cannot read as a pass here either.
-if command -v rustup >/dev/null 2>&1 \
-    && rustup target list --installed 2>/dev/null | grep -qx 'aarch64-unknown-linux-gnu'; then
-    cargo check --workspace --all-targets --target aarch64-unknown-linux-gnu \
-        || fail "the aarch64 build is broken, and the README promises aarch64 Linux"
-elif [[ -n "${REQUIRE_AARCH64:-}" ]]; then
-    fail "REQUIRE_AARCH64 is set but the aarch64 target is not installed (rustup target add)"
+# This BUILDS rather than CHECKS, and that distinction is load-bearing:
+# `cargo check --target aarch64-unknown-linux-gnu` passed a file containing
+# `ld1 {v9.16b}, [x3, #16]`, an instruction that does not exist. Inline asm is
+# opaque to type checking and only parsed by LLVM at codegen, so a check-only
+# gate approves assembly the assembler refuses. Linking the target also needs
+# the cross gcc, so both are preconditions rather than assumptions.
+AARCH64_TARGET="aarch64-unknown-linux-gnu"
+AARCH64_LINKER="aarch64-linux-gnu-gcc"
+missing=""
+if ! command -v "$AARCH64_LINKER" >/dev/null 2>&1; then
+    missing="$AARCH64_LINKER"
+elif ! command -v rustup >/dev/null 2>&1 \
+    || ! rustup target list --installed 2>/dev/null | grep -qx "$AARCH64_TARGET"; then
+    missing="the $AARCH64_TARGET rustup target"
+fi
+if [[ -n "$missing" ]]; then
+    if [[ -n "${REQUIRE_AARCH64:-}" ]]; then
+        fail "REQUIRE_AARCH64 is set, but this runner lacks $missing"
+    fi
+    printf 'no %s here: skipping. CI installs both, so this skip is local-only.\n' "$missing"
 else
-    printf 'rustup target aarch64-unknown-linux-gnu not installed here: skipping.\n'
-    printf 'CI installs it, so this skip is local-only.\n'
+    # Cross-linking needs the cross gcc named as the linker: cargo reaches for
+    # the host `cc` otherwise, and an x86 linker cannot be handed the AArch64
+    #-only `--fix-cortex-a53-843419` flag that rustc passes by default.
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$AARCH64_LINKER" \
+        cargo build --target "$AARCH64_TARGET" \
+        || fail "the aarch64 build is broken, and the README promises aarch64 Linux"
 fi
 
 if [[ -n "$QUICK" ]]; then
