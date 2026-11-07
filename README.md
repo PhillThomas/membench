@@ -1,5 +1,7 @@
 # membench
 
+![membench run: a Read / Write / Copy / Latency grid for Memory, L1, L2 and L3, with the machine it was measured on named underneath](assets/social-preview.png)
+
 A Cache & Memory Benchmark for the Linux terminal, in the shape of AIDA64's
 window: a grid of Read / Write / Copy in GB/s and Latency in ns for Memory, L1,
 L2 and L3, with a system panel underneath. It is written in Rust, the measured
