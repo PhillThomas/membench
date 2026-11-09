@@ -29,7 +29,7 @@
 //! runnable processes exists so a human can make the judgement the thresholds
 //! cannot.
 
-use crate::result::{Interference, InterferenceSample, RunningProcess, Warning};
+use crate::result::{Interference, InterferenceSample, RunningTask, Warning};
 use crate::sysinfo::read_to_string;
 
 /// Most processes to name in a sample. The count of what was running matters
@@ -118,6 +118,15 @@ pub fn sample() -> InterferenceSample {
         ];
     }
 
+    // Tasks, not processes. `/proc/<pid>/stat` reports the state of the thread
+    // group leader, so a process whose leader sleeps while eight worker threads
+    // burn memory reads as idle — the shape of most interference worth
+    // complaining about, and the shape of membench itself: the first version of
+    // this scan looked at leaders, which is why a run of this tool on an idle
+    // box reported `runnable: 0` while its own threads were the busiest things
+    // on the machine. Walking `<pid>/task/<tid>` costs about a thousand small
+    // reads on a working desktop, measured below, and it is the only way the
+    // count means what its name says.
     let mut named = 0;
     if let Ok(entries) = std::fs::read_dir("/proc") {
         for entry in entries.flatten() {
@@ -126,28 +135,50 @@ pub fn sample() -> InterferenceSample {
             if !name.bytes().all(|b| b.is_ascii_digit()) {
                 continue;
             }
-            let Some(text) = read_to_string(&format!("/proc/{name}/stat")) else {
-                continue;
-            };
-            let Some((state, cpu, comm)) = parse_stat(text.trim_end()) else {
-                continue;
-            };
-            match state {
-                'R' => {
-                    s.runnable_total += 1;
-                    if named < MAX_NAMED {
-                        named += 1;
-                        s.running.push(RunningProcess {
-                            pid: name.parse().unwrap_or(0),
-                            comm,
-                            cpu,
-                        });
+            let mut lines = Vec::new();
+            if let Ok(threads) = std::fs::read_dir(format!("/proc/{name}/task")) {
+                for thread in threads.flatten() {
+                    let tid = thread.file_name();
+                    let tid = tid.to_string_lossy();
+                    if tid.bytes().all(|b| b.is_ascii_digit()) {
+                        if let Some(text) = read_to_string(&format!("/proc/{name}/task/{tid}/stat"))
+                        {
+                            lines.push(text);
+                        }
                     }
                 }
-                // Blocked in the kernel is the other half of "something is
-                // happening that we are not measuring".
-                'D' => s.uninterruptible += 1,
-                _ => {}
+            }
+            // A process we cannot read the threads of still gets its own line:
+            // it is the leader's, which is a partial answer rather than none.
+            if lines.is_empty() {
+                if let Some(text) = read_to_string(&format!("/proc/{name}/stat")) {
+                    lines.push(text);
+                }
+            }
+            for line in lines {
+                let Some((state, cpu, comm)) = parse_stat(line.trim_end()) else {
+                    continue;
+                };
+                match state {
+                    'R' => {
+                        s.runnable_total += 1;
+                        if named < MAX_NAMED {
+                            named += 1;
+                            // The pid of the process, not the thread id: the
+                            // comm is already the thread's name, and a reader
+                            // follows this up with `ps -p`, not `ps -p <tid>`.
+                            s.running.push(RunningTask {
+                                pid: name.parse().unwrap_or(0),
+                                comm,
+                                cpu,
+                            });
+                        }
+                    }
+                    // Blocked in the kernel is the other half of "something is
+                    // happening that we are not measuring".
+                    'D' => s.uninterruptible += 1,
+                    _ => {}
+                }
             }
         }
     }
@@ -229,6 +260,42 @@ fn pressure_warning(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_busy_thread_in_this_process_is_counted() {
+        // The reason the scan walks threads. A leader that sleeps while its
+        // worker spins looks like an idle process, and a scan of leaders alone
+        // would report this machine as doing nothing.
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        let worker = std::thread::Builder::new()
+            .name("mb-probe-thread".into())
+            .spawn(move || {
+                let mut x = 0u64;
+                while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    x = x.wrapping_add(1);
+                    std::hint::black_box(&x);
+                }
+            })
+            .expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let s = sample();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        worker.join().expect("join");
+        assert!(s.runnable_total >= 1, "the scan counted nothing at all");
+        // The list is capped, so on a machine with more runnable tasks than the
+        // cap our thread may fairly have missed a place in it. What must never
+        // happen is a short list that leaves it out.
+        let named = s.running.iter().any(|p| p.comm == "mb-probe-thread");
+        assert!(
+            named || s.running.len() >= MAX_NAMED,
+            "the spinning thread was not named: {:?}",
+            s.running
+                .iter()
+                .map(|p| p.comm.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn the_cpu_field_is_a_cpu_on_this_machine() {

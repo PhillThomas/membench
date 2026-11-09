@@ -782,11 +782,15 @@ impl SystemInfo {
 // Results
 // ---------------------------------------------------------------------------------------------
 
-/// One process the sampler found runnable at an instant.
+/// One runnable task the sampler found: a thread, which is usually not the
+/// process a reader would have named.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
-pub struct RunningProcess {
+pub struct RunningTask {
+    /// The process's id rather than the thread's: the comm already says which
+    /// thread it was, and a reader follows this up with `ps -p`.
     pub pid: u32,
-    /// The command name as the kernel recorded it, which truncates at fifteen
+    /// The command name as the kernel recorded it — for a thread that is the
+    /// thread's own name if it set one, truncated by the kernel to fifteen
     /// characters. Not a path, and not proof of anything: a name next to a
     /// number, for a human to recognise.
     pub comm: String,
@@ -812,8 +816,11 @@ pub struct InterferenceSample {
     /// `/proc/loadavg`. Usually dominated by the benchmark itself, which is
     /// exactly why the fields above exist as well.
     pub loadavg: [f64; 3],
-    /// Runnable processes, capped at a handful; `runnable_total` is the count.
-    pub running: Vec<RunningProcess>,
+    /// Runnable tasks, capped at a handful; `runnable_total` is the full count.
+    pub running: Vec<RunningTask>,
+    /// Counted per task, not per process. A multicore worker whose leader is
+    /// asleep is the common shape of interference, and a scan of process
+    /// leaders alone reports it as an idle machine.
     pub runnable_total: usize,
     /// Processes blocked in the kernel: the other half of what a moving
     /// pressure number means.
