@@ -19,6 +19,17 @@ pub enum Error {
     #[error("this CPU has no {0} cache, so that cell cannot be measured")]
     MissingCache(Level),
 
+    /// The level is listed by the machine but its size is not. Kept distinct
+    /// from `MissingCache` on purpose: a VM whose firmware publishes cache
+    /// nodes without sizes (an Oracle aarch64 guest reports the level and its
+    /// type through PPTT and no size, and ships no SMBIOS type 7 either) does
+    /// have the cache. "this CPU has no L1 cache" said about a Neoverse-N1 is
+    /// a false statement about the hardware, not an honest report of a gap.
+    #[error(
+        "{0} cache is present but its size is not reported here, so that cell cannot be measured"
+    )]
+    CacheSizeUnknown(Level),
+
     /// Buffer sizing produced something unusable (e.g. smaller than one line).
     #[error("cannot size a buffer for {level} from the detected topology: {why}")]
     Unsizeable { level: Level, why: String },

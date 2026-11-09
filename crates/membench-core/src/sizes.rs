@@ -153,7 +153,7 @@ pub fn for_level(sys: &SystemInfo, settings: &Settings, level: Level) -> Result<
 type Planned = (usize, Vec<usize>, Option<u64>, usize, String);
 
 fn l1(sys: &SystemInfo, requested: usize) -> Result<Planned> {
-    let l1d = data_cache(sys, 1).ok_or(Error::MissingCache(Level::L1))?;
+    let l1d = data_cache_size(sys, Level::L1)?;
     let cores = core_cpus(sys);
     if cores.is_empty() {
         return Err(Error::Unsizeable {
@@ -177,7 +177,7 @@ fn l1(sys: &SystemInfo, requested: usize) -> Result<Planned> {
 }
 
 fn l2(sys: &SystemInfo, requested: usize) -> Result<Planned> {
-    let l2 = data_cache(sys, 2).ok_or(Error::MissingCache(Level::L2))?;
+    let l2 = data_cache_size(sys, Level::L2)?;
     let cores = core_cpus(sys);
     if cores.is_empty() {
         return Err(Error::Unsizeable {
@@ -199,7 +199,7 @@ fn l2(sys: &SystemInfo, requested: usize) -> Result<Planned> {
 /// L3 needs a range, not a fraction: big enough to spill out of every L2 on the
 /// way through, small enough to stay inside the share of L3 this thread gets.
 fn l3(sys: &SystemInfo, requested: usize) -> Result<Planned> {
-    let l3_bytes = data_cache(sys, 3).ok_or(Error::MissingCache(Level::L3))?;
+    let l3_bytes = data_cache_size(sys, Level::L3)?;
     let l2_bytes = data_cache(sys, 2).unwrap_or(l3_bytes / 8);
     let domains = &sys.caches.l3_domains;
 
@@ -367,6 +367,29 @@ fn latency_chase(
 }
 
 /// The data cache for a level: L1d specifically, then unified, then anything.
+/// Sizing input with the two failure modes kept apart: no such level, or a
+/// level whose size this machine does not report. See `Error::CacheSizeUnknown`.
+fn data_cache_size(sys: &SystemInfo, level: Level) -> Result<u64> {
+    let n = match level {
+        Level::L1 => 1u8,
+        Level::L2 => 2,
+        Level::L3 => 3,
+        Level::Memory => return Err(Error::MissingCache(level)),
+    };
+    if let Some(bytes) = data_cache(sys, n) {
+        return Ok(bytes);
+    }
+    if sys
+        .caches
+        .levels
+        .iter()
+        .any(|c| c.level == n && c.size_bytes.is_none())
+    {
+        return Err(Error::CacheSizeUnknown(level));
+    }
+    Err(Error::MissingCache(level))
+}
+
 fn data_cache(sys: &SystemInfo, level: u8) -> Option<u64> {
     let c: &CacheInfo = &sys.caches;
     c.data_level(level).and_then(|c| c.size_bytes).or_else(|| {
@@ -760,9 +783,13 @@ mod tests {
         sys.caches.l3_domains.clear();
         let e = for_level(&sys, &settings(1), Level::L2).unwrap_err();
         assert!(matches!(e, Error::MissingCache(Level::L2)), "{e:?}");
-        // L3 now has no size at all.
+        // L3 is still listed, it just has no size: that is the VM case, and it
+        // is a different truth from "this CPU has no L3".
         let e = for_level(&sys, &settings(1), Level::L3).unwrap_err();
-        assert!(matches!(e, Error::MissingCache(Level::L3)), "{e:?}");
+        assert!(
+            matches!(e, Error::CacheSizeUnknown(Level::L3)),
+            "a present level with no size must not claim the cache is absent: {e}"
+        );
         // L1 still works and says so.
         assert!(for_level(&sys, &settings(1), Level::L1).is_ok());
     }

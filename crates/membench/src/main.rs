@@ -428,12 +428,17 @@ fn self_test() -> Result<ExitCode> {
             sys.topology.physical_cores
         ),
     );
+    // Passing means the tool learned something about the cache hierarchy, not
+    // that every cell can be sized: a VM whose firmware publishes cache nodes
+    // without sizes has real caches and an incomplete report, and failing the
+    // self-test for that would call the machine broken when the firmware is
+    // merely quiet. The gap is said out loud in the detail line instead.
     check(
         "cache detection",
-        sys.caches.data_cache_bytes(Level::L1).is_some()
-            && sys.caches.data_cache_bytes(Level::L2).is_some(),
+        !sys.caches.levels.is_empty(),
         format!(
-            "L1d {} · L2 {} · L3 {} · line {}",
+            "{} level(s) · L1d {} · L2 {} · L3 {} · line {}{}",
+            sys.caches.levels.len(),
             sys.caches
                 .data_cache_bytes(Level::L1)
                 .map(sysinfo::human_bytes)
@@ -450,6 +455,13 @@ fn self_test() -> Result<ExitCode> {
                 .line_bytes
                 .map(|b| b.to_string())
                 .unwrap_or_else(|| "Unknown".into()),
+            if sys.caches.data_cache_bytes(Level::L1).is_some()
+                && sys.caches.data_cache_bytes(Level::L2).is_some()
+            {
+                String::new()
+            } else {
+                " · sizes not reported by this machine".to_string()
+            }
         ),
     );
 
@@ -520,24 +532,38 @@ fn self_test() -> Result<ExitCode> {
     }
 
     let settings = Settings::default();
-    match membench_core::sizes::plan(&sys, &settings) {
-        Ok(plans) => check(
-            "buffer sizing",
-            plans.iter().all(|p| p.bytes_per_thread >= 1024),
-            plans
-                .iter()
-                .map(|p| {
-                    format!(
-                        "{} {}",
-                        p.level.short(),
-                        sysinfo::human_bytes(p.bytes_per_thread as u64)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
-        ),
-        Err(e) => check("buffer sizing", false, e.to_string()),
+    // Sized the way the runner sizes it: a level the machine cannot describe
+    // is skipped and named, not a failure of the machine. Before this a VM
+    // whose firmware publishes no cache sizes failed its self-test on the
+    // first level, which reported a firmware omission as a broken host. A plan
+    // with nothing sizeable in it is still a real failure.
+    let mut sized: Vec<membench_core::sizes::CellPlan> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for level in membench_core::result::Level::ALL {
+        match membench_core::sizes::for_level(&sys, &settings, level) {
+            Ok(plan) => sized.push(plan),
+            Err(e) => skipped.push(format!("{}: {e}", level.short())),
+        }
     }
+    let mut detail = sized
+        .iter()
+        .map(|p| {
+            format!(
+                "{} {}",
+                p.level.short(),
+                sysinfo::human_bytes(p.bytes_per_thread as u64)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if !skipped.is_empty() {
+        detail.push_str(&format!(" · not sized: {}", skipped.join(" · ")));
+    }
+    check(
+        "buffer sizing",
+        !sized.is_empty() && sized.iter().all(|p| p.bytes_per_thread >= 1024),
+        detail,
+    );
 
     match membench_core::alloc::Buffer::new(
         8 * 1024 * 1024,
