@@ -782,6 +782,60 @@ impl SystemInfo {
 // Results
 // ---------------------------------------------------------------------------------------------
 
+/// One process the sampler found runnable at an instant.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+pub struct RunningProcess {
+    pub pid: u32,
+    /// The command name as the kernel recorded it, which truncates at fifteen
+    /// characters. Not a path, and not proof of anything: a name next to a
+    /// number, for a human to recognise.
+    pub comm: String,
+    /// The last CPU it ran on, when `/proc` would say.
+    pub cpu: Option<usize>,
+}
+
+/// A look at the machine from outside the benchmark, at one instant.
+///
+/// Added after the fact because a run was cleared of interference on the
+/// strength of a load average the benchmark was itself producing. See
+/// [`crate::sysinfo::interference`].
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct InterferenceSample {
+    /// Local time with offset, RFC 3339, of the instant this was read.
+    pub at: String,
+    /// PSI `some avg10` as a percentage: the share of the last ten seconds in
+    /// which at least one task was stalled on this resource. `None` means the
+    /// kernel does not report it, which is a different claim from `Some(0.0)`.
+    pub cpu_some_avg10: Option<f64>,
+    pub memory_some_avg10: Option<f64>,
+    pub io_some_avg10: Option<f64>,
+    /// `/proc/loadavg`. Usually dominated by the benchmark itself, which is
+    /// exactly why the fields above exist as well.
+    pub loadavg: [f64; 3],
+    /// Runnable processes, capped at a handful; `runnable_total` is the count.
+    pub running: Vec<RunningProcess>,
+    pub runnable_total: usize,
+    /// Processes blocked in the kernel: the other half of what a moving
+    /// pressure number means.
+    pub uninterruptible: usize,
+    /// What was readable on this kernel, so a reader can tell a quiet machine
+    /// from an unreadable one.
+    pub source: String,
+}
+
+/// Both ends of a run, because the shape of the disagreement is the informative
+/// part: pressure arriving after the start sample is not the same story as
+/// pressure that was there first.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct Interference {
+    pub start: InterferenceSample,
+    pub end: InterferenceSample,
+    /// Set when either sample crossed the thresholds in
+    /// [`crate::sysinfo::interference`]. Also pushed into `warnings` so the
+    /// panel and the document say the same thing.
+    pub warning: Option<Warning>,
+}
+
 /// One measured cell: a (level, op) pair with its samples and full metadata.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct CellResult {
@@ -919,6 +973,12 @@ pub struct RunResults {
     pub clock: Option<ClockMeasurement>,
     pub cells: Vec<CellResult>,
     pub sweep: Option<Sweep>,
+    /// Additive in schema 2, like the DIMM part number before it: a document
+    /// written before this existed simply lacks it and loads with `None`, and
+    /// `store`'s version check is about incompatible readings, not about a
+    /// field being new.
+    #[serde(default)]
+    pub interference: Option<Interference>,
 }
 
 impl RunResults {
@@ -933,6 +993,7 @@ impl RunResults {
             clock: None,
             cells: Vec::new(),
             sweep: None,
+            interference: None,
         }
     }
 

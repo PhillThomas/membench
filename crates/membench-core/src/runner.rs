@@ -155,6 +155,7 @@ impl Runner {
         events: Option<Sender<Event>>,
     ) -> Result<RunResults> {
         crate::ensure_release_build("a benchmark run")?;
+        let interference_start = sysinfo::interference::sample();
         let mut results = RunResults::new(self.sys.clone(), self.settings.clone());
         results.warnings = self.preflight_warnings();
         for w in &self.sys.warnings {
@@ -361,6 +362,15 @@ rather than sized on a guess"
                 "nothing was measured: no grid cells and no sweep",
             ));
         }
+        // The second look at the machine, taken after the last measurement but
+        // before the document closes, so that a neighbour which arrived during
+        // the run is recorded by the run that it spoiled.
+        let snapshot = sysinfo::interference::snapshot(interference_start);
+        if let Some(w) = &snapshot.warning {
+            results.warnings.push(w.clone());
+        }
+        results.interference = Some(snapshot);
+
         if let Some(tx) = &events {
             let _ = tx.send(Event::Finished(Box::new(results.clone())));
         }

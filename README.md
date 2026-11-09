@@ -50,6 +50,12 @@ not optimised for).
 
 ## Build
 
+**Platform: Linux, x86-64 or aarch64.** Detection reads `/proc` and `/sys`,
+threads are pinned with `sched_setaffinity`, and the buffer allocator asks the
+kernel for huge pages — so those are the parts a port is made of, not the
+measured loops. Building for another operating system stops with one sentence
+about this rather than a page of `libc` errors.
+
 ```sh
 cargo build --release          # never --debug; see above
 ./target/release/membench self-test
@@ -434,14 +440,32 @@ refused in containers, where the panel says so and falls back to what it has.
 [`crates/membench-core/src/result.rs`](crates/membench-core/src/result.rs):
 `schema_version`, generator, timestamp, the full system description, the
 settings that produced it, warnings, the measured clock, one entry per cell with
-every retained trial, and the sweep. `store::load` refuses a document whose
-`schema_version` it does not understand, and `compare` prints a warning when the
-two documents were produced with different settings before it prints a delta.
+every retained trial, the sweep, and `interference`.
+
+`interference` is what the machine looked like from outside the benchmark when
+the run started and when it finished: kernel pressure numbers, the load average,
+and the processes that were runnable. It exists because a run was once cleared
+of interference on the strength of a load average the benchmark itself was
+making. It samples at the two ends of a run, and PSI is a rolling ten-second
+average, so it cannot see a process that arrived between two cells and left
+again — it is coarse, and it is not nothing.
+
+What it does not catch is worth naming, because it is the case that started
+this: two processes spinning on a twelve-core machine stall nobody, so the
+pressure numbers sit at zero — I checked — while the L3 write figure still moves
+by a factor of three. The warning is driven by stalls, not by how many things
+are awake, because a machine with spare cores is not a contended machine as far
+as the kernel is concerned. The list of runnable processes is there for the
+reader to weigh; the tool does not claim to have judged it.
+
+`store::load` refuses a document whose `schema_version` it does not understand,
+and `compare` prints a warning when the two documents were produced with
+different settings before it prints a delta.
 
 ## Development
 
 ```sh
-cargo test --workspace              # 85 core + 18 binary tests
+cargo test --workspace              # 116 core + 23 binary tests
 cargo test --release -p membench-core
 ./scripts/check-kernels-asm.sh      # rule 1, mechanically
 ./scripts/tui-smoke.py target/release/membench

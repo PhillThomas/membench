@@ -94,8 +94,20 @@ else
     # Cross-linking needs the cross gcc named as the linker: cargo reaches for
     # the host `cc` otherwise, and an x86 linker cannot be handed the AArch64
     #-only `--fix-cortex-a53-843419` flag that rustc passes by default.
+    #
+    # Two commands, because they catch different things and neither reaches the
+    # other's ground. Clippy over `--all-targets` compiles the AArch64 TESTS,
+    # which the host gates never see: an `#[cfg]` on a decode helper that admits
+    # its own tests on x86 and hides them on ARM is invisible until someone
+    # builds it there, and dead code that only exists on one architecture warns
+    # only when you build for that architecture. The build then runs the
+    # codegen that clippy stops short of, which is the only thing that parses
+    # inline asm.
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$AARCH64_LINKER" \
-        cargo build --target "$AARCH64_TARGET" \
+        cargo clippy --target "$AARCH64_TARGET" --workspace --all-targets -- -D warnings \
+        || fail "the aarch64 build or its tests carry a warning"
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$AARCH64_LINKER" \
+        cargo build --target "$AARCH64_TARGET" --workspace --all-targets \
         || fail "the aarch64 build is broken, and the README promises aarch64 Linux"
 fi
 
