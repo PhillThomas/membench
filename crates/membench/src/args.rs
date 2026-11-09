@@ -113,6 +113,13 @@ pub struct Common {
     /// Show what would run and what it would be measured on, then exit.
     #[arg(long)]
     pub dry_run: bool,
+    /// Leave the hostname and the DIMM serial numbers out of the output, for
+    /// when a result file is going somewhere public. Measurements and the
+    /// metadata that explains them are untouched, and the document records
+    /// that it was redacted, so an absent serial never looks like a firmware
+    /// that failed to report one.
+    #[arg(long)]
+    pub redact: bool,
 }
 
 impl Common {
@@ -156,6 +163,7 @@ impl Common {
             s.levels = parse_levels(raw)?;
         }
         s.copy_counts_both = self.copy_counts_both;
+        s.redact = self.redact;
         if let Some(raw) = &self.write_hint {
             s.write_headline = raw
                 .parse::<WriteHeadline>()

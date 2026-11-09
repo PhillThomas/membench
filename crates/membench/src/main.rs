@@ -110,7 +110,7 @@ fn dispatch(command: Option<Command>) -> Result<ExitCode> {
         }) => {
             let settings = common.settings().map_err(bad_flag)?;
             if common.dry_run {
-                return dry_run(&settings, &sysinfo::gather());
+                return dry_run(&settings, &sysinfo::gather_for(&settings));
             }
             let results = if !no_tui && std::io::stdout().is_terminal() {
                 // The TUI starts the run straight away and hands back whatever
@@ -146,7 +146,7 @@ fn dispatch(command: Option<Command>) -> Result<ExitCode> {
             settings.ops = vec![Op::Latency];
             settings.with_sweep = true;
             if common.dry_run {
-                return dry_run(&settings, &sysinfo::gather());
+                return dry_run(&settings, &sysinfo::gather_for(&settings));
             }
             let results = measure_headless(settings)?;
             match &results.sweep {
