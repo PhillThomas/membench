@@ -444,10 +444,11 @@ every retained trial, the sweep, and `interference`.
 
 `interference` is what the machine looked like from outside the benchmark when
 the run started and when it finished: kernel pressure numbers, the load average,
-and the processes that were runnable. It exists because a run was once cleared
+and the tasks that were runnable — threads, not just the process leaders a
+`loadavg`-style glance would catch. It exists because a run was once cleared
 of interference on the strength of a load average the benchmark itself was
 making. It samples at the two ends of a run, and PSI is a rolling ten-second
-average, so it cannot see a process that arrived between two cells and left
+average, so it cannot see a task that arrived between two cells and left
 again — it is coarse, and it is not nothing.
 
 What it does not catch is worth naming, because it is the case that started
