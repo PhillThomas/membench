@@ -200,6 +200,13 @@ fn l2(sys: &SystemInfo, requested: usize) -> Result<Planned> {
 /// way through, small enough to stay inside the share of L3 this thread gets.
 fn l3(sys: &SystemInfo, requested: usize) -> Result<Planned> {
     let l3_bytes = data_cache_size(sys, Level::L3)?;
+    // The floor under a thread's share is two L2s. On a machine that reports
+    // no L2 the only number available is an eighth of L3, which is a convention
+    // and not a measurement, and it is not harmless: a too-small floor lets the
+    // thread-shrink loop keep threads it would otherwise have dropped. So the
+    // guess is carried forward and named in the derivation rather than being
+    // quietly used as if it had been read from firmware.
+    let l2_reported = data_cache(sys, 2).is_some();
     let l2_bytes = data_cache(sys, 2).unwrap_or(l3_bytes / 8);
     let domains = &sys.caches.l3_domains;
 
@@ -262,6 +269,13 @@ fn l3(sys: &SystemInfo, requested: usize) -> Result<Planned> {
         crate::sysinfo::human_bytes(l2_bytes),
         crate::sysinfo::human_bytes(lower as u64)
     );
+    // The one place in this file where a number can arrive without being
+    // measured, so it is the place that has to say so.
+    let derivation = if l2_reported {
+        derivation
+    } else {
+        format!("{derivation} · L2 size not reported here, so the floor assumed an eighth of L3")
+    };
     if let Some(why) = note_reason {
         return Ok((
             threads.max(1),
@@ -842,5 +856,38 @@ mod tests {
         .unwrap();
         assert_eq!(only.len(), 1);
         assert_eq!(only[0].level, Level::Memory);
+    }
+
+    #[test]
+    fn an_assumed_l2_says_so_in_the_derivation() {
+        // The floor under one thread's share of L3 is two L2s, and on a machine
+        // whose firmware is silent about L2 the only number to hand is an eighth
+        // of L3. That is a guess which can keep threads the shrink loop would
+        // otherwise have dropped, so the plan has to admit it: a reader
+        // comparing this machine against one with a reported L2 is comparing a
+        // measurement against an assumption and deserves to know.
+        let mut sys = fixture(32 * 1024, 512 * 1024, 16 * 1024 * 1024, 8, 2);
+        let s = Settings::default();
+
+        let measured = for_level(&sys, &s, Level::L3).unwrap().derivation;
+        assert!(
+            !measured.contains("assumed"),
+            "a reported L2 must not be described as a guess: {measured}"
+        );
+
+        if let Some(l2) = sys.caches.levels.iter_mut().find(|c| c.level == 2) {
+            l2.size_bytes = None;
+        } else {
+            panic!("the fixture is supposed to declare an L2");
+        }
+        let guessed = for_level(&sys, &s, Level::L3).unwrap().derivation;
+        assert!(
+            guessed.contains("assumed an eighth of L3"),
+            "the substitution must be named where the number is shown: {guessed}"
+        );
+        assert!(
+            guessed.contains("floor"),
+            "without losing the arithmetic: {guessed}"
+        );
     }
 }

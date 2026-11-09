@@ -372,6 +372,13 @@ pub struct Settings {
     /// default can land next to a busy SMT sibling, and no amount of care in
     /// the kernels fixes that, so the choice has to be reachable from outside.
     pub latency_cpu: Option<usize>,
+    /// Drop the fields that identify this machine to a person rather than
+    /// describing the hardware the numbers came from (`--redact`): the
+    /// hostname, and the serial numbers burned into the memory modules. A
+    /// setting rather than a post-processing step, because it has to be
+    /// recorded: a field that was removed and a field the tool could never
+    /// read must not look identical to whoever compares two runs later.
+    pub redact: bool,
     /// Levels and ops selected for this run.
     pub levels: Vec<Level>,
     pub ops: Vec<Op>,
@@ -394,6 +401,7 @@ impl Default for Settings {
             mlock: true,
             boost_priority: true,
             latency_cpu: None,
+            redact: false,
             levels: Level::ALL.to_vec(),
             ops: vec![
                 Op::Read,
@@ -738,6 +746,36 @@ impl SystemInfo {
             .filter(|w| matches!(w.code.as_str(), "governor" | "epp" | "freq-drop"))
             .collect()
     }
+
+    /// Remove what identifies this machine to a person, and keep everything
+    /// that explains the numbers. Called once, straight after detection, by
+    /// [`crate::sysinfo::gather_for`] when `--redact` is set, so that no
+    /// writer has to remember.
+    ///
+    /// The warning matters as much as the removal. `None` already means "the
+    /// firmware did not tell us", and a reader who cannot tell that apart from
+    /// "the user withheld it" has been told something false about the
+    /// machine. So a redacted run says so in the same list that carries every
+    /// other caveat.
+    pub fn redact(&mut self) {
+        let had_serials = self.memory.modules.iter().any(|d| d.serial.is_some());
+        self.os.hostname = None;
+        for d in &mut self.memory.modules {
+            d.serial = None;
+        }
+        let hint = if had_serials {
+            "every other field is as detected; run without --redact where the file is not being shared"
+        } else {
+            "this machine reports no serial numbers anyway; every other field is as detected"
+        };
+        self.warnings.push(
+            Warning::new(
+                "redaction",
+                "hostname and DIMM serial numbers were withheld on request",
+            )
+            .with_hint(hint),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -934,5 +972,83 @@ impl RunResults {
 
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn machine() -> SystemInfo {
+        SystemInfo {
+            os: OsInfo {
+                hostname: Some("3950xrig".to_string()),
+                kernel_release: Some("6.12.115".to_string()),
+                ..Default::default()
+            },
+            memory: MemoryInfo {
+                modules: vec![Dimm {
+                    slot: Some("DIMM 0".to_string()),
+                    serial: Some("89A2C1F4".to_string()),
+                    part_number: Some("F4-3600C18-16GTZR".to_string()),
+                    manufacturer: Some("G Skill".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn redaction_removes_identity_and_says_which_it_was() {
+        let mut sys = machine();
+        sys.redact();
+        assert!(sys.os.hostname.is_none());
+        assert!(
+            sys.memory.modules[0].serial.is_none(),
+            "the serial is the one field that singles out this box"
+        );
+        // Part number and manufacturer stay: they describe the hardware, and
+        // dropping them would cost the reader a real comparison.
+        assert!(sys.memory.modules[0].part_number.is_some());
+        assert!(sys.memory.modules[0].manufacturer.is_some());
+        assert_eq!(sys.os.kernel_release.as_deref(), Some("6.12.115"));
+        let red = sys
+            .warnings
+            .iter()
+            .filter(|w| w.code == "redaction")
+            .collect::<Vec<_>>();
+        assert_eq!(red.len(), 1, "a redacted run must record that it was");
+        assert!(red[0].hint.is_some(), "and say what is still real");
+    }
+
+    #[test]
+    fn redaction_distinguishes_withheld_from_absent() {
+        let mut bare = machine();
+        bare.memory.modules[0].serial = None;
+        bare.redact();
+        let w = bare
+            .warnings
+            .iter()
+            .find(|w| w.code == "redaction")
+            .expect("warning");
+        assert!(
+            w.hint.as_deref().unwrap_or_default().contains("anyway"),
+            "the hint must differ when there was nothing to withhold: {:?}",
+            w.hint
+        );
+    }
+
+    #[test]
+    fn redact_defaults_off_and_is_recorded_in_settings() {
+        assert!(!Settings::default().redact);
+        let s = Settings {
+            redact: true,
+            ..Settings::default()
+        };
+        assert!(serde_json::to_string(&s)
+            .unwrap()
+            .contains("\"redact\":true"));
     }
 }

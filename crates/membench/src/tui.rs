@@ -77,7 +77,7 @@ pub struct App {
 
 impl App {
     fn new(settings: Settings) -> Result<App> {
-        let system = sysinfo::gather();
+        let system = sysinfo::gather_for(&settings);
         Ok(App {
             settings,
             system,

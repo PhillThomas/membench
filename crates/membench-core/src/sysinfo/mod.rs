@@ -275,6 +275,21 @@ pub fn gather() -> SystemInfo {
     }
 }
 
+/// Detect the machine the way these settings ask for it.
+///
+/// Everything that reports a machine should come through here rather than
+/// calling [`gather`] directly, so that a setting like `--redact` cannot be
+/// forgotten by the next output path someone adds. `gather` stays public
+/// because detection itself is useful without settings (the self-test, and
+/// tests that only care about parsing).
+pub fn gather_for(settings: &crate::result::Settings) -> crate::result::SystemInfo {
+    let mut sys = gather();
+    if settings.redact {
+        sys.redact();
+    }
+    sys
+}
+
 pub fn page_size() -> usize {
     // SAFETY: sysconf with a constant name is argument-free in practice.
     let sz = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };

@@ -466,6 +466,7 @@ mod portable {
 
     /// # Safety
     /// As above.
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))] // the asm! paths cover both
     pub unsafe fn chase(start: *const u64, loads: u64) -> u64 {
         let mut p: usize = start as usize;
         for _ in 0..(loads & !15) {
@@ -475,6 +476,7 @@ mod portable {
         p as u64
     }
 
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))] // the asm! paths cover both
     pub fn add_chain(iterations: u64) -> u64 {
         let mut acc = 0u64;
         for _ in 0..(iterations & !15) {

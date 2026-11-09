@@ -62,7 +62,7 @@ pub struct Runner {
 impl Runner {
     /// Detect the machine and resolve the kernel set. Cheap, no measurement.
     pub fn prepare(settings: Settings) -> Result<Runner> {
-        let sys = sysinfo::gather();
+        let sys = sysinfo::gather_for(&settings);
         let kernels = Kernels::resolve(settings.isa)?;
         // An explicit `--cpu` is checked rather than trusted: pinning silently
         // fails on a cpu that does not exist, and the run then measures a

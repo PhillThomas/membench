@@ -89,7 +89,8 @@ Shared flags: `--threads N`, `--cpu N`,
 `--isa avx512|avx2|sse2|neon|scalar`,
 `--pages 4k|2m|1g`, `--trials N`, `--duration-ms N`, `--write-hint nt|normal`,
 `--copy-counts-both`, `--dry-run` (print the plan and the warnings, measure
-nothing).
+nothing), `--redact` (drop the hostname and the DIMM serials before anything is
+written, and record in the document that they were dropped rather than absent).
 
 In the TUI: `s` start, `l` latency sweep (drawn as a chart, log x axis), `d`
 the selected cell's details, `e` export to `~/.local/share/membench/`, `↑↓←→`
@@ -142,9 +143,12 @@ Run as root, or raise `RLIMIT_MEMLOCK`, if you want the memory buffers locked
 with `mlock`. The tool does not need root for anything else; the DIMM table
 below is the only part that is strictly better as root.
 
-Huge pages matter more than people expect for the latency column, because a
-16 GiB chase with 4 KiB pages is a page-fault benchmark wearing a latency
-label. `--pages 2m` is the default and every cell reports what it actually got.
+`--pages 2m` is the default and every cell reports what it actually got. Whether
+that matters has been assumed more often than measured here. What has been
+measured is narrower than the old claim on this page: on a Ryzen 7 7800X3D,
+`--pages 4k` and `--pages 2m` gave the same memory bandwidth to three figures —
+31.3 GB/s normal stores and 31.9 GB/s non-temporal, three runs each — with L3
+figures within 4.8%.
 On this development machine — an LXC container on a TrueNAS host — transparent
 huge pages are effectively not granted: `AnonHugePages` reads 0 for the cell
 buffers and for an 8 MiB probe, repeatedly, even after `MADV_COLLAPSE` returns
