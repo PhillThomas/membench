@@ -30,6 +30,24 @@
 // width question from the source into the target.
 #![allow(clippy::unnecessary_cast)]
 
+// One sentence instead of fourteen `libc` errors. The measured loops are not
+// the platform-specific part — the NEON and SSE kernels are as portable as
+// their instruction sets — but detection reads `/proc` and `/sys`, threads are
+// pinned with `sched_setaffinity`, and the buffer allocator asks the kernel for
+// huge pages, all three of which are Linux interfaces rather than concepts with
+// obvious twins elsewhere. A port is therefore an operating-system project, and
+// someone thinking about one should be told that in one line rather than by a
+// wall of unresolved names that all point at the same three decisions.
+//
+// This says "Linux", not "not macOS": the project has never been built for a
+// BSD either, and nothing here claims it would not need the same work.
+#[cfg(not(target_os = "linux"))]
+compile_error!(
+    "membench is Linux-only: detection reads /proc and /sys, affinity uses \
+     sched_setaffinity, and buffers ask the kernel for huge pages. See the \
+     README's Platform note."
+);
+
 pub mod affinity;
 pub mod alloc;
 pub mod bandwidth;

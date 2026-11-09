@@ -13,6 +13,7 @@ pub mod cache;
 pub mod cpu;
 pub mod dimm;
 pub mod governor;
+pub mod interference;
 pub mod topology;
 
 use std::fs;
