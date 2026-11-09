@@ -196,9 +196,17 @@ impl Runner {
             let plan = match sizes::for_level(&self.sys, &self.settings, level) {
                 Ok(p) => p,
                 Err(e) => {
+                    let hint = match e {
+                        Error::CacheSizeUnknown(_) => {
+                            "the machine lists this cache level but not \
+its size, which is normal on VMs whose firmware omits it; the cell is left out \
+rather than sized on a guess"
+                        }
+                        _ => "the cell is missing from the table rather than estimated",
+                    };
                     results.warnings.push(
                         Warning::new("sizing", format!("{}: {e}", level.grid_label()))
-                            .with_hint("the cell is missing from the table rather than estimated"),
+                            .with_hint(hint),
                     );
                     continue;
                 }
